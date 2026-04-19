@@ -388,6 +388,7 @@ error!("Failed to persist association for {}: {e}", args.from);
             {
                 error!("Failed to delete memory {}: {e}", removed.id);
             }
+            set_memory_count(guard.graph.len() as u64);
             Ok(success_json(&ForgetResult::hard_deleted(args.memory_id)))
         } else {
             if let Some(mem) = guard.graph.get_memory_mut(&args.memory_id) {
@@ -487,7 +488,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     metrics::init();
-    set_memory_count(0);
 
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", cli.metrics_port)).await.unwrap();
@@ -503,6 +503,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => Box::new(RocksDbStore::open(std::path::Path::new(&cli.data_path))?),
     };
     let state = Arc::new(Mutex::new(CogniMemState::new(storage)));
+    {
+        let guard = state.lock().await;
+        set_memory_count(guard.graph.len() as u64);
+    }
     let server = CogniMemServer::new(state.clone());
 
     tokio::spawn(decay_task(state, Duration::from_secs(cli.decay_interval_secs), cli.prune_threshold));
