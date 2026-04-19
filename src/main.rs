@@ -20,11 +20,14 @@ use rmcp::{
         ReadResourceRequestParams, ReadResourceResult, ResourceContents, Resource, RawResource,
     },
     service::{RequestContext, RoleServer},
-    transport::stdio,
 };
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{self, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::error;
 
@@ -487,20 +490,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
+    if cli.daemon {
+        run_daemon(cli).await?;
+    } else {
+        run_client_bridge(cli).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_client_bridge(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = socket_path_for(&cli);
+    let lock_path = bootstrap_lock_path(&socket_path);
+
+    if !try_connect_existing(&socket_path).await?
+        && let Some(_lock_guard) = acquire_bootstrap_lock(&lock_path)?
+        && !try_connect_existing(&socket_path).await?
+    {
+        cleanup_stale_socket(&socket_path)?;
+        spawn_daemon(&cli, &socket_path)?;
+    }
+
+    let socket = wait_for_daemon_socket_or_retry(&cli, &socket_path, &lock_path).await?;
+    bridge_stdio(socket).await?;
+
+    Ok(())
+}
+
+async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     metrics::init();
 
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", cli.metrics_port)).await.unwrap();
-        loop {
-            if let Ok((stream, _)) = listener.accept().await {
-                let _ = handle_metrics(stream).await;
-            }
-        }
-    });
+    let socket_path = socket_path_for(&cli);
+    ensure_parent_dir(Path::new(&cli.data_path))?;
+    ensure_parent_dir(&socket_path)?;
+    cleanup_stale_socket(&socket_path)?;
+
+    let _socket_guard = SocketFileGuard(socket_path.clone());
+    let listener = UnixListener::bind(&socket_path)?;
+
+    tokio::spawn(start_metrics_server(cli.metrics_port));
 
     let storage: Box<dyn MemoryStore> = match cli.storage.as_str() {
         "memory" => Box::new(InMemoryStore::new()),
-        _ => Box::new(RocksDbStore::open(std::path::Path::new(&cli.data_path))?),
+        _ => Box::new(RocksDbStore::open(Path::new(&cli.data_path))?),
     };
     let state = Arc::new(Mutex::new(CogniMemState::new(storage)));
     {
@@ -509,12 +541,188 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let server = CogniMemServer::new(state.clone());
 
-    tokio::spawn(decay_task(state, Duration::from_secs(cli.decay_interval_secs), cli.prune_threshold));
+    tokio::spawn(decay_task(
+        state,
+        Duration::from_secs(cli.decay_interval_secs),
+        cli.prune_threshold,
+    ));
 
-    let running_service = server.serve(stdio()).await?;
-    running_service.waiting().await?;
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let server = server.clone();
+        tokio::spawn(async move {
+            match server.serve(stream).await {
+                Ok(running_service) => {
+                    let _ = running_service.waiting().await;
+                }
+                Err(err) => {
+                    error!("Failed to serve MCP client: {err}");
+                }
+            }
+        });
+    }
+}
 
+fn socket_path_for(cli: &Cli) -> PathBuf {
+    if let Some(path) = &cli.socket_path {
+        return PathBuf::from(path);
+    }
+
+    let data_path = Path::new(&cli.data_path);
+    if let Some(parent) = data_path.parent() {
+        return parent.join("cognimem.sock");
+    }
+
+    PathBuf::from("./cognimem.sock")
+}
+
+fn bootstrap_lock_path(socket_path: &Path) -> PathBuf {
+    let mut path = socket_path.as_os_str().to_os_string();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     Ok(())
+}
+
+fn cleanup_stale_socket(socket_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if socket_path.exists() {
+        std::fs::remove_file(socket_path)?;
+    }
+    Ok(())
+}
+
+fn acquire_bootstrap_lock(
+    lock_path: &Path,
+) -> Result<Option<BootstrapLockGuard>, Box<dyn std::error::Error>> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock_path)
+    {
+        Ok(_) => Ok(Some(BootstrapLockGuard(lock_path.to_path_buf()))),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(err) => Err(Box::new(err)),
+    }
+}
+
+async fn try_connect_existing(socket_path: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    match UnixStream::connect(socket_path).await {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+fn spawn_daemon(cli: &Cli, socket_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let current_exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(current_exe);
+    command
+        .arg("--daemon")
+        .arg("--data-path")
+        .arg(&cli.data_path)
+        .arg("--decay-interval-secs")
+        .arg(cli.decay_interval_secs.to_string())
+        .arg("--prune-threshold")
+        .arg(cli.prune_threshold.to_string())
+        .arg("--storage")
+        .arg(&cli.storage)
+        .arg("--metrics-port")
+        .arg(cli.metrics_port.to_string())
+        .arg("--socket-path")
+        .arg(socket_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    command.spawn()?;
+    Ok(())
+}
+
+async fn wait_for_daemon_socket(
+    socket_path: &Path,
+) -> Result<UnixStream, Box<dyn std::error::Error>> {
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(5);
+
+    loop {
+        match UnixStream::connect(socket_path).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) if start.elapsed() < timeout => {
+                let _ = err;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => return Err(Box::new(err)),
+        }
+    }
+}
+
+async fn wait_for_daemon_socket_or_retry(
+    cli: &Cli,
+    socket_path: &Path,
+    lock_path: &Path,
+) -> Result<UnixStream, Box<dyn std::error::Error>> {
+    match wait_for_daemon_socket(socket_path).await {
+        Ok(stream) => Ok(stream),
+        Err(_) => {
+            let _ = std::fs::remove_file(lock_path);
+            if let Some(_lock_guard) = acquire_bootstrap_lock(lock_path)?
+                && !try_connect_existing(socket_path).await?
+            {
+                cleanup_stale_socket(socket_path)?;
+                spawn_daemon(cli, socket_path)?;
+            }
+            wait_for_daemon_socket(socket_path).await
+        }
+    }
+}
+
+async fn bridge_stdio(socket: UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+    let (socket_read, mut socket_write) = io::split(socket);
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    let stdin_to_socket = async {
+        io::copy(&mut stdin, &mut socket_write).await?;
+        socket_write.shutdown().await
+    };
+
+    let socket_to_stdout = async {
+        let mut reader = socket_read;
+        io::copy(&mut reader, &mut stdout).await?;
+        stdout.flush().await
+    };
+
+    tokio::try_join!(stdin_to_socket, socket_to_stdout)?;
+    Ok(())
+}
+
+async fn start_metrics_server(metrics_port: u16) {
+    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{metrics_port}")).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            error!("Failed to bind metrics port {metrics_port}: {err}");
+            return;
+        }
+    };
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(async move {
+                    let _ = handle_metrics(stream).await;
+                });
+            }
+            Err(err) => {
+                error!("Failed to accept metrics connection: {err}");
+            }
+        }
+    }
 }
 
 async fn handle_metrics(mut stream: tokio::net::TcpStream) -> std::io::Result<()> {
@@ -529,4 +737,20 @@ async fn handle_metrics(mut stream: tokio::net::TcpStream) -> std::io::Result<()
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
     Ok(())
+}
+
+struct SocketFileGuard(PathBuf);
+
+impl Drop for SocketFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+struct BootstrapLockGuard(PathBuf);
+
+impl Drop for BootstrapLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
