@@ -299,7 +299,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(decay_task(state, Duration::from_secs(300)));
 
-    server.serve(stdio()).await?;
+    let running_service = server.serve(stdio()).await?;
+    running_service.waiting().await?;
 
     Ok(())
 }
