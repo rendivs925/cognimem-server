@@ -25,6 +25,16 @@ impl MemoryTier {
             MemoryTier::Procedural => 0.1,
         }
     }
+
+    pub fn capacity(&self) -> Option<usize> {
+        match self {
+            MemoryTier::Sensory => Some(50),
+            MemoryTier::Working => Some(200),
+            MemoryTier::Episodic => None,
+            MemoryTier::Semantic => None,
+            MemoryTier::Procedural => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

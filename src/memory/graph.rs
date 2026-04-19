@@ -81,11 +81,36 @@ impl MemoryGraph {
             .collect()
     }
 
+    pub fn spreading_activation(&self, start_ids: &[Uuid], max_depth: usize, decay_factor: f32, min_strength: f32) -> Vec<(Uuid, f32, usize)> {
+        let mut visited: HashSet<Uuid> = start_ids.iter().copied().collect();
+        let mut results: Vec<(Uuid, f32, usize)> = Vec::new();
+        let mut frontier: Vec<(Uuid, f32, usize)> = start_ids.iter().map(|id| (*id, 1.0, 0)).collect();
+
+        while let Some((id, accumulated, depth)) = frontier.pop() {
+            if depth >= max_depth {
+                continue;
+            }
+            for (neighbor, edge_strength) in self.get_associations(&id) {
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                let strength = accumulated * edge_strength * decay_factor.powi(depth as i32 + 1);
+                if strength < min_strength {
+                    continue;
+                }
+                visited.insert(neighbor);
+                results.push((neighbor, strength, depth + 1));
+                frontier.push((neighbor, strength, depth + 1));
+            }
+        }
+
+        results
+    }
+
     pub fn get_all_memories(&self) -> Vec<&CognitiveMemoryUnit> {
         self.nodes.iter().map(|(_, v)| v).collect()
     }
 
-    #[allow(dead_code)] // Public API: used by tests and future consumers
     pub fn get_by_tier(&self, tier: MemoryTier) -> Vec<&CognitiveMemoryUnit> {
         self.by_tier
             .get(&tier)
@@ -97,9 +122,23 @@ impl MemoryGraph {
         self.id_to_key.contains_key(id)
     }
 
-    #[allow(dead_code)] // Public API: used by tests and future consumers
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn count_by_tier(&self, tier: MemoryTier) -> usize {
+        self.by_tier.get(&tier).map(|s| s.len()).unwrap_or(0)
+    }
+
+    pub fn find_lowest_activation_in_tier(&self, tier: MemoryTier) -> Option<Uuid> {
+        self.by_tier
+            .get(&tier)
+            .and_then(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.get_memory(id).map(|m| (m.id, m.metadata.base_activation)))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .map(|(id, _)| id)
+            })
     }
 }
 
@@ -203,5 +242,82 @@ mod tests {
         let assocs = graph.get_associations(&id2);
         assert_eq!(assocs.len(), 1);
         assert_eq!(assocs[0].0, id1);
+    }
+
+    #[test]
+    fn spreading_activation_single_hop() {
+        let mut graph = MemoryGraph::new();
+        let id1 = graph.add_memory(make_memory("first", MemoryTier::Episodic));
+        let id2 = graph.add_memory(make_memory("second", MemoryTier::Episodic));
+        graph.add_association(&id1, &id2, 0.8);
+
+        let results = graph.spreading_activation(&[id1], 3, 0.5, 0.1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, id2);
+        assert_eq!(results[0].2, 1);
+    }
+
+    #[test]
+    fn spreading_activation_multi_hop() {
+        let mut graph = MemoryGraph::new();
+        let id1 = graph.add_memory(make_memory("first", MemoryTier::Episodic));
+        let id2 = graph.add_memory(make_memory("second", MemoryTier::Episodic));
+        let id3 = graph.add_memory(make_memory("third", MemoryTier::Episodic));
+        graph.add_association(&id1, &id2, 0.9);
+        graph.add_association(&id2, &id3, 0.9);
+
+        let results = graph.spreading_activation(&[id1], 3, 0.5, 0.01);
+        assert_eq!(results.len(), 2);
+        let id2_result = results.iter().find(|(id, _, _)| id == &id2).unwrap();
+        assert_eq!(id2_result.2, 1);
+        let id3_result = results.iter().find(|(id, _, _)| id == &id3).unwrap();
+        assert_eq!(id3_result.2, 2);
+    }
+
+    #[test]
+    fn spreading_activation_no_cycles() {
+        let mut graph = MemoryGraph::new();
+        let id1 = graph.add_memory(make_memory("first", MemoryTier::Episodic));
+        let id2 = graph.add_memory(make_memory("second", MemoryTier::Episodic));
+        graph.add_association(&id1, &id2, 0.8);
+        graph.add_association(&id2, &id1, 0.8);
+
+        let results = graph.spreading_activation(&[id1], 3, 0.5, 0.1);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn count_by_tier_tracks_removals() {
+        let mut graph = MemoryGraph::new();
+        let id1 = graph.add_memory(make_memory("a", MemoryTier::Sensory));
+        let id2 = graph.add_memory(make_memory("b", MemoryTier::Sensory));
+        graph.add_memory(make_memory("c", MemoryTier::Episodic));
+
+        assert_eq!(graph.count_by_tier(MemoryTier::Sensory), 2);
+        graph.remove_memory(&id1);
+        assert_eq!(graph.count_by_tier(MemoryTier::Sensory), 1);
+        assert_eq!(graph.count_by_tier(MemoryTier::Episodic), 1);
+        assert_eq!(graph.count_by_tier(MemoryTier::Procedural), 0);
+        let _ = id2;
+    }
+
+    #[test]
+    fn find_lowest_activation_returns_correct() {
+        let mut graph = MemoryGraph::new();
+        let id1 = graph.add_memory(make_memory("high", MemoryTier::Sensory));
+        graph.get_memory_mut(&id1).unwrap().metadata.base_activation = 0.9;
+        let id2 = graph.add_memory(make_memory("low", MemoryTier::Sensory));
+        graph.get_memory_mut(&id2).unwrap().metadata.base_activation = 0.1;
+        let id3 = graph.add_memory(make_memory("mid", MemoryTier::Sensory));
+        graph.get_memory_mut(&id3).unwrap().metadata.base_activation = 0.5;
+
+        let lowest = graph.find_lowest_activation_in_tier(MemoryTier::Sensory);
+        assert_eq!(lowest, Some(id2));
+    }
+
+    #[test]
+    fn find_lowest_activation_empty_tier() {
+        let graph = MemoryGraph::new();
+        assert_eq!(graph.find_lowest_activation_in_tier(MemoryTier::Sensory), None);
     }
 }
