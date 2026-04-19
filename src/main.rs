@@ -97,9 +97,10 @@ impl ServerHandler for CogniMemServer {
 
     async fn list_tools(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let _ = (request, context);
         let tools = vec![
             rmcp::model::Tool::new(
                 Cow::Borrowed("remember"),
@@ -176,8 +177,9 @@ impl ServerHandler for CogniMemServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let _ = context;
         let args = request.arguments.unwrap_or_default();
 
         match request.name.as_ref() {
@@ -192,9 +194,10 @@ impl ServerHandler for CogniMemServer {
 
     async fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
+        let _ = (request, context);
         let guard = self.state.lock().await;
         let resources: Vec<Resource> = guard
             .graph
@@ -221,8 +224,9 @@ impl ServerHandler for CogniMemServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+        let _ = context;
         let uri = &request.uri;
         if !uri.starts_with("memory://") {
             return Err(rmcp::ErrorData::new(
