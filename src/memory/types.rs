@@ -3,21 +3,16 @@ use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, IntoStaticStr, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, IntoStaticStr, EnumString, Default)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum MemoryTier {
     Sensory,
     Working,
+    #[default]
     Episodic,
     Semantic,
     Procedural,
-}
-
-impl Default for MemoryTier {
-    fn default() -> Self {
-        Self::Episodic
-    }
 }
 
 impl MemoryTier {
@@ -96,7 +91,7 @@ impl CognitiveMemoryUnit {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RememberArgs {
     pub content: String,
     pub tier: Option<MemoryTier>,
@@ -104,32 +99,11 @@ pub struct RememberArgs {
     pub associations: Option<Vec<Uuid>>,
 }
 
-impl Default for RememberArgs {
-    fn default() -> Self {
-        Self {
-            content: String::new(),
-            tier: None,
-            importance: None,
-            associations: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RecallArgs {
     pub query: String,
     pub tier: Option<MemoryTier>,
     pub limit: Option<usize>,
-}
-
-impl Default for RecallArgs {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            tier: None,
-            limit: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,6 +147,34 @@ impl From<&CognitiveMemoryUnit> for MemorySummary {
             content: memory.content.clone(),
             tier: memory.tier,
             activation: memory.metadata.base_activation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssociateArgs {
+    #[serde(default)]
+    pub from: Uuid,
+    #[serde(default)]
+    pub to: Uuid,
+    pub strength: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssociateResult {
+    pub from: Uuid,
+    pub to: Uuid,
+    pub strength: f32,
+    pub message: String,
+}
+
+impl AssociateResult {
+    pub fn success(from: Uuid, to: Uuid, strength: f32) -> Self {
+        Self {
+            from,
+            to,
+            strength,
+            message: "Association created successfully".to_string(),
         }
     }
 }
