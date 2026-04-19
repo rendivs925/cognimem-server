@@ -18,6 +18,11 @@ impl MemoryStorage {
         Ok(())
     }
 
+    pub fn delete(&self, id: &uuid::Uuid) -> Result<()> {
+        self.db.delete(id.as_bytes())?;
+        Ok(())
+    }
+
     pub fn load_all(&self) -> Result<Vec<CognitiveMemoryUnit>> {
         let mut memories = Vec::new();
         for item in self.db.iterator(rocksdb::IteratorMode::Start) {

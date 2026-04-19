@@ -104,6 +104,8 @@ pub struct RecallArgs {
     pub query: String,
     pub tier: Option<MemoryTier>,
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub min_activation: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,5 +178,64 @@ impl AssociateResult {
             strength,
             message: "Association created successfully".to_string(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgetArgs {
+    pub memory_id: Uuid,
+    #[serde(default)]
+    pub hard_delete: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgetResult {
+    pub memory_id: Uuid,
+    pub deleted: bool,
+    pub message: String,
+}
+
+impl ForgetResult {
+    pub fn hard_deleted(memory_id: Uuid) -> Self {
+        Self {
+            memory_id,
+            deleted: true,
+            message: "Memory permanently deleted".to_string(),
+        }
+    }
+
+    pub fn soft_deleted(memory_id: Uuid) -> Self {
+        Self {
+            memory_id,
+            deleted: false,
+            message: "Memory marked for pruning (activation set to near-zero)".to_string(),
+        }
+    }
+
+    pub fn not_found(memory_id: Uuid) -> Self {
+        Self {
+            memory_id,
+            deleted: false,
+            message: "Memory not found".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReflectArgs {
+    #[serde(default)]
+    pub intensity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReflectResult {
+    pub pruned_count: usize,
+    pub promoted_count: usize,
+    pub decayed_count: usize,
+}
+
+impl ReflectResult {
+    pub fn new(pruned_count: usize, promoted_count: usize, decayed_count: usize) -> Self {
+        Self { pruned_count, promoted_count, decayed_count }
     }
 }

@@ -1,8 +1,8 @@
 mod memory;
 
 use memory::{
-    AssociateArgs, AssociateResult, CognitiveMemoryUnit, MemoryStorage, MemorySummary, RecallArgs,
-    RecallResult, RememberArgs, RememberResult,
+    AssociateArgs, AssociateResult, CognitiveMemoryUnit, ForgetArgs, ForgetResult, MemoryStorage,
+    MemorySummary, RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -71,6 +71,8 @@ fn json_schema(json: serde_json::Value) -> std::sync::Arc<serde_json::Map<String
     std::sync::Arc::new(json.as_object().cloned().unwrap())
 }
 
+const TIER_ENUM: &[&str] = &["sensory", "working", "episodic", "semantic", "procedural"];
+
 impl ServerHandler for CogniMemServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         rmcp::model::ServerInfo::new(rmcp::model::ServerCapabilities::default())
@@ -89,7 +91,7 @@ impl ServerHandler for CogniMemServer {
                     "type": "object",
                     "properties": {
                         "content": { "type": "string" },
-                        "tier": { "type": "string", "enum": ["sensory","working","episodic","semantic","procedural"] },
+                        "tier": { "type": "string", "enum": TIER_ENUM },
                         "importance": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "associations": { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
@@ -103,8 +105,9 @@ impl ServerHandler for CogniMemServer {
                     "type": "object",
                     "properties": {
                         "query": { "type": "string" },
-                        "tier": { "type": "string", "enum": ["sensory","working","episodic","semantic","procedural"] },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                        "tier": { "type": "string", "enum": TIER_ENUM },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                        "min_activation": { "type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Minimum activation threshold" }
                     },
                     "required": ["query"]
                 })),
@@ -120,6 +123,28 @@ impl ServerHandler for CogniMemServer {
                         "strength": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                     },
                     "required": ["from", "to"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("forget"),
+                Cow::Borrowed("Delete or soft-delete a specific memory"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": { "type": "string", "format": "uuid" },
+                        "hard_delete": { "type": "boolean", "description": "Permanently remove (true) or set activation near-zero (false, default)" }
+                    },
+                    "required": ["memory_id"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("reflect"),
+                Cow::Borrowed("Run a consolidation cycle: decay activation, prune weak memories, promote strong ones"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "intensity": { "type": "string", "enum": ["light", "full"], "description": "light=decay only, full=decay+prune+promote" }
+                    }
                 })),
             ),
         ];
@@ -142,6 +167,8 @@ impl ServerHandler for CogniMemServer {
             "remember" => self.handle_remember(args).await,
             "recall" => self.handle_recall(args).await,
             "associate" => self.handle_associate(args).await,
+            "forget" => self.handle_forget(args).await,
+            "reflect" => self.handle_reflect(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -181,6 +208,7 @@ impl CogniMemServer {
 
         let query = args.query.to_lowercase();
         let limit = args.limit.unwrap_or(5);
+        let min_activation = args.min_activation.unwrap_or(0.0);
         let now = chrono::Utc::now().timestamp();
 
         let mut guard = self.state.lock().await;
@@ -189,7 +217,9 @@ impl CogniMemServer {
             .graph
             .get_all_memories()
             .into_iter()
-            .filter(|m| matches_tier(m.tier, args.tier) && matches_query(&m.content, &query))
+            .filter(|m| matches_tier(m.tier, args.tier)
+                && matches_query(&m.content, &query)
+                && m.metadata.base_activation >= min_activation)
             .collect();
 
         expand_with_associations(&mut results, &guard.graph);
@@ -230,6 +260,67 @@ impl CogniMemServer {
         }
 
         Ok(success_json(&AssociateResult::success(args.from, args.to, strength)))
+    }
+
+    async fn handle_forget(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: ForgetArgs = parse_args(args)?;
+
+        let mut guard = self.state.lock().await;
+
+        if !guard.graph.contains(&args.memory_id) {
+            return Ok(success_json(&ForgetResult::not_found(args.memory_id)));
+        }
+
+        if args.hard_delete.unwrap_or(false) {
+            if let Some(removed) = guard.graph.remove_memory(&args.memory_id)
+                && let Err(e) = guard.storage.delete(&removed.id)
+            {
+                error!("Failed to delete memory {}: {e}", removed.id);
+            }
+            Ok(success_json(&ForgetResult::hard_deleted(args.memory_id)))
+        } else {
+            if let Some(mem) = guard.graph.get_memory_mut(&args.memory_id) {
+                mem.metadata.base_activation = 0.001;
+            }
+            if let Some(mem) = guard.graph.get_memory(&args.memory_id)
+                && let Err(e) = guard.storage.save(mem)
+            {
+                error!("Failed to persist soft-delete for {}: {e}", args.memory_id);
+            }
+            Ok(success_json(&ForgetResult::soft_deleted(args.memory_id)))
+        }
+    }
+
+    async fn handle_reflect(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: ReflectArgs = parse_args(args)?;
+        let intensity = args.intensity.unwrap_or_else(|| "light".to_string());
+
+        let mut guard = self.state.lock().await;
+        let total = guard.graph.len();
+
+        memory::apply_decay_to_all(&mut guard.graph);
+
+        let pruned = if intensity == "full" {
+            memory::prune_below_threshold(&mut guard.graph, 0.01)
+        } else {
+            0
+        };
+
+        let promoted = memory::promote_memories(&mut guard.graph);
+
+        for mem in guard.graph.get_all_memories() {
+            if let Err(e) = guard.storage.save(mem) {
+                error!("Failed to persist reflected memory {}: {e}", mem.id);
+            }
+        }
+
+        Ok(success_json(&ReflectResult::new(pruned, promoted, total)))
     }
 }
 

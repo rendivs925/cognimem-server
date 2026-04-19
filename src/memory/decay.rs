@@ -35,6 +35,27 @@ fn is_prunable(tier: MemoryTier, activation: f32, threshold: f32) -> bool {
     matches!(tier, MemoryTier::Sensory | MemoryTier::Working | MemoryTier::Episodic)
 }
 
+pub fn promote_memories(graph: &mut MemoryGraph) -> usize {
+    let promotions: Vec<(uuid::Uuid, MemoryTier)> = graph
+        .get_all_memories()
+        .iter()
+        .filter_map(|m| match m.tier {
+            MemoryTier::Episodic if m.metadata.base_activation > 0.8 => Some((m.id, MemoryTier::Semantic)),
+            MemoryTier::Semantic if m.metadata.base_activation > 0.9 => Some((m.id, MemoryTier::Procedural)),
+            _ => None,
+        })
+        .collect();
+
+    let count = promotions.len();
+    for (id, new_tier) in &promotions {
+        if let Some(mem) = graph.get_memory_mut(id) {
+            mem.tier = *new_tier;
+            mem.metadata.decay_rate = new_tier.decay_rate();
+        }
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
