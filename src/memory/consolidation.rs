@@ -1,6 +1,6 @@
-use crate::embeddings::{cosine_similarity, EmbeddingEngine};
 use super::graph::MemoryGraph;
 use super::types::{Conflict, ConflictResolution, MemoryTier};
+use crate::embeddings::{EmbeddingEngine, cosine_similarity};
 use chrono::Utc;
 
 const REPLAY_BOOST: f32 = 0.05;
@@ -43,13 +43,19 @@ fn replay_recent(graph: &mut MemoryGraph) {
     }
 }
 
-fn compute_all_embeddings(graph: &MemoryGraph, embedder: &dyn EmbeddingEngine) -> Vec<(uuid::Uuid, Vec<f32>, MemoryTier)> {
+fn compute_all_embeddings(
+    graph: &MemoryGraph,
+    embedder: &dyn EmbeddingEngine,
+) -> Vec<(uuid::Uuid, Vec<f32>, MemoryTier)> {
     graph
         .get_all_memories()
         .iter()
         .filter(|m| !matches!(m.tier, MemoryTier::Sensory))
         .map(|m| {
-            let emb = graph.get_embedding(&m.id).cloned().unwrap_or_else(|| embedder.embed(&m.content));
+            let emb = graph
+                .get_embedding(&m.id)
+                .cloned()
+                .unwrap_or_else(|| embedder.embed(&m.content));
             (m.id, emb, m.tier)
         })
         .collect()
@@ -59,7 +65,10 @@ pub fn detect_conflicts(graph: &MemoryGraph, embedder: &dyn EmbeddingEngine) -> 
     detect_conflicts_from_embeddings(graph, compute_all_embeddings(graph, embedder))
 }
 
-fn detect_conflicts_from_embeddings(_graph: &MemoryGraph, embeddings: Vec<(uuid::Uuid, Vec<f32>, MemoryTier)>) -> Vec<Conflict> {
+fn detect_conflicts_from_embeddings(
+    _graph: &MemoryGraph,
+    embeddings: Vec<(uuid::Uuid, Vec<f32>, MemoryTier)>,
+) -> Vec<Conflict> {
     let mut conflicts = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -97,13 +106,21 @@ fn detect_conflicts_from_embeddings(_graph: &MemoryGraph, embeddings: Vec<(uuid:
     conflicts
 }
 
-pub fn resolve_conflicts(graph: &mut MemoryGraph, conflicts: &[Conflict], strategy: &ConflictResolution) -> Vec<uuid::Uuid> {
+pub fn resolve_conflicts(
+    graph: &mut MemoryGraph,
+    conflicts: &[Conflict],
+    strategy: &ConflictResolution,
+) -> Vec<uuid::Uuid> {
     match strategy {
         ConflictResolution::LatestWins => {
             let mut removed = Vec::new();
             for c in conflicts {
-                let a_time = graph.get_memory(&c.memory_id_1).map(|m| m.metadata.created_at);
-                let b_time = graph.get_memory(&c.memory_id_2).map(|m| m.metadata.created_at);
+                let a_time = graph
+                    .get_memory(&c.memory_id_1)
+                    .map(|m| m.metadata.created_at);
+                let b_time = graph
+                    .get_memory(&c.memory_id_2)
+                    .map(|m| m.metadata.created_at);
                 let to_remove = match (a_time, b_time) {
                     (Some(a), Some(b)) if a >= b => c.memory_id_2,
                     (Some(_), Some(_)) => c.memory_id_1,
@@ -144,7 +161,10 @@ mod tests {
     #[test]
     fn test_consolidate_replays_recent() {
         let mut graph = MemoryGraph::new();
-        let id = graph.add_memory(make_memory_with_content("recent memory", MemoryTier::Episodic));
+        let id = graph.add_memory(make_memory_with_content(
+            "recent memory",
+            MemoryTier::Episodic,
+        ));
         graph.get_memory_mut(&id).unwrap().metadata.base_activation = 0.3;
 
         let embedder = HashEmbedding::new();
@@ -153,7 +173,10 @@ mod tests {
 
         let _conflicts = consolidate(&mut graph, &embedder);
         let mem = graph.get_memory(&id).unwrap();
-        assert!(mem.metadata.base_activation > 0.3, "activation should increase after replay");
+        assert!(
+            mem.metadata.base_activation > 0.3,
+            "activation should increase after replay"
+        );
     }
 
     #[test]
@@ -161,8 +184,14 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
 
-        let id1 = graph.add_memory(make_memory_with_content("rust programming language tutorial", MemoryTier::Episodic));
-        let id2 = graph.add_memory(make_memory_with_content("rust programming language guide", MemoryTier::Episodic));
+        let id1 = graph.add_memory(make_memory_with_content(
+            "rust programming language tutorial",
+            MemoryTier::Episodic,
+        ));
+        let id2 = graph.add_memory(make_memory_with_content(
+            "rust programming language guide",
+            MemoryTier::Episodic,
+        ));
 
         let emb1 = embedder.embed("rust programming language tutorial");
         let emb2 = embedder.embed("rust programming language guide");
@@ -180,11 +209,20 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
 
-        graph.add_memory(make_memory_with_content("similar content", MemoryTier::Episodic));
-        graph.add_memory(make_memory_with_content("similar content here", MemoryTier::Semantic));
+        graph.add_memory(make_memory_with_content(
+            "similar content",
+            MemoryTier::Episodic,
+        ));
+        graph.add_memory(make_memory_with_content(
+            "similar content here",
+            MemoryTier::Semantic,
+        ));
 
         let conflicts = detect_conflicts(&graph, &embedder);
-        assert!(conflicts.is_empty(), "memories in different tiers should not conflict");
+        assert!(
+            conflicts.is_empty(),
+            "memories in different tiers should not conflict"
+        );
     }
 
     #[test]

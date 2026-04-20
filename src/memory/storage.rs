@@ -18,7 +18,8 @@ impl RocksDbStore {
 
 impl MemoryStore for RocksDbStore {
     fn save(&self, memory: &CognitiveMemoryUnit) -> Result<()> {
-        self.db.put(memory.id.as_bytes(), serde_json::to_vec(memory)?)?;
+        self.db
+            .put(memory.id.as_bytes(), serde_json::to_vec(memory)?)?;
         Ok(())
     }
 

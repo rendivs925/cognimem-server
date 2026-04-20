@@ -1,5 +1,5 @@
 use super::types::{CognitiveMemoryUnit, MemoryTier};
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{SlotMap, new_key_type};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -84,10 +84,17 @@ impl MemoryGraph {
             .collect()
     }
 
-    pub fn spreading_activation(&self, start_ids: &[Uuid], max_depth: usize, decay_factor: f32, min_strength: f32) -> Vec<(Uuid, f32, usize)> {
+    pub fn spreading_activation(
+        &self,
+        start_ids: &[Uuid],
+        max_depth: usize,
+        decay_factor: f32,
+        min_strength: f32,
+    ) -> Vec<(Uuid, f32, usize)> {
         let mut visited: HashSet<Uuid> = start_ids.iter().copied().collect();
         let mut results: Vec<(Uuid, f32, usize)> = Vec::new();
-        let mut frontier: Vec<(Uuid, f32, usize)> = start_ids.iter().map(|id| (*id, 1.0, 0)).collect();
+        let mut frontier: Vec<(Uuid, f32, usize)> =
+            start_ids.iter().map(|id| (*id, 1.0, 0)).collect();
 
         while let Some((id, accumulated, depth)) = frontier.pop() {
             if depth >= max_depth {
@@ -134,14 +141,15 @@ impl MemoryGraph {
     }
 
     pub fn find_lowest_activation_in_tier(&self, tier: MemoryTier) -> Option<Uuid> {
-        self.by_tier
-            .get(&tier)
-            .and_then(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.get_memory(id).map(|m| (m.id, m.metadata.base_activation)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-                    .map(|(id, _)| id)
-            })
+        self.by_tier.get(&tier).and_then(|ids| {
+            ids.iter()
+                .filter_map(|id| {
+                    self.get_memory(id)
+                        .map(|m| (m.id, m.metadata.base_activation))
+                })
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .map(|(id, _)| id)
+        })
     }
 
     pub fn change_tier(&mut self, id: &Uuid, old_tier: MemoryTier, new_tier: MemoryTier) {
@@ -166,7 +174,12 @@ impl MemoryGraph {
         self.embeddings.get(id)
     }
 
-    pub fn vector_search(&self, query_embedding: &[f32], limit: usize, min_similarity: f32) -> Vec<(Uuid, f32)> {
+    pub fn vector_search(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        min_similarity: f32,
+    ) -> Vec<(Uuid, f32)> {
         let mut scores: Vec<(Uuid, f32)> = self
             .embeddings
             .iter()
@@ -365,6 +378,9 @@ mod tests {
     #[test]
     fn find_lowest_activation_empty_tier() {
         let graph = MemoryGraph::new();
-        assert_eq!(graph.find_lowest_activation_in_tier(MemoryTier::Sensory), None);
+        assert_eq!(
+            graph.find_lowest_activation_in_tier(MemoryTier::Sensory),
+            None
+        );
     }
 }

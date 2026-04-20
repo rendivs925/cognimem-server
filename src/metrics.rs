@@ -46,16 +46,30 @@ pub fn encode() -> String {
 }
 
 #[inline]
-pub fn set_memory_count(v: u64) { MEMORY_COUNT.store(v, Ordering::Relaxed); }
+pub fn set_memory_count(v: u64) {
+    MEMORY_COUNT.store(v, Ordering::Relaxed);
+}
 #[inline]
-pub fn inc_remember() { REMEMBER_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_remember() {
+    REMEMBER_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 #[inline]
-pub fn inc_recall() { RECALL_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_recall() {
+    RECALL_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 #[inline]
-pub fn inc_forget() { FORGET_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_forget() {
+    FORGET_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 #[inline]
-pub fn inc_reflect() { REFLECT_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_reflect() {
+    REFLECT_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 #[inline]
-pub fn inc_prune(v: u64) { PRUNE_TOTAL.fetch_add(v, Ordering::Relaxed); }
+pub fn inc_prune(v: u64) {
+    PRUNE_TOTAL.fetch_add(v, Ordering::Relaxed);
+}
 #[inline]
-pub fn inc_associate() { ASSOCIATE_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_associate() {
+    ASSOCIATE_TOTAL.fetch_add(1, Ordering::Relaxed);
+}

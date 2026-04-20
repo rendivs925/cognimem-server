@@ -26,7 +26,8 @@ impl Fts5Search {
             .split_whitespace()
             .filter(|w| !w.is_empty())
             .map(|w| {
-                let cleaned: String = w.chars()
+                let cleaned: String = w
+                    .chars()
                     .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                     .collect();
                 cleaned
@@ -122,9 +123,21 @@ mod tests {
         let id2 = Uuid::new_v4();
         let id3 = Uuid::new_v4();
 
-        engine.index(id1, "The quick brown fox jumps over lazy dog", MemoryTier::Episodic);
-        engine.index(id2, "A brown bear walked through the forest", MemoryTier::Semantic);
-        engine.index(id3, "The fox and the hound are friends", MemoryTier::Episodic);
+        engine.index(
+            id1,
+            "The quick brown fox jumps over lazy dog",
+            MemoryTier::Episodic,
+        );
+        engine.index(
+            id2,
+            "A brown bear walked through the forest",
+            MemoryTier::Semantic,
+        );
+        engine.index(
+            id3,
+            "The fox and the hound are friends",
+            MemoryTier::Episodic,
+        );
 
         let results = engine.search("fox", None, 10);
         assert!(results.contains(&id1));
@@ -175,7 +188,11 @@ mod tests {
         let id_high = Uuid::new_v4();
         let id_low = Uuid::new_v4();
 
-        engine.index(id_low, "rust programming occasionally", MemoryTier::Episodic);
+        engine.index(
+            id_low,
+            "rust programming occasionally",
+            MemoryTier::Episodic,
+        );
         engine.index(id_high, "rust rust rust programming", MemoryTier::Episodic);
 
         let results = engine.search("rust", None, 10);
@@ -197,7 +214,10 @@ mod tests {
     fn substring_query_match() {
         assert!(matches_query("Hello World Rust Programming", "rust"));
         assert!(matches_query("Hello World Rust Programming", "world"));
-        assert!(matches_query("Hello World Rust Programming", "rust program"));
+        assert!(matches_query(
+            "Hello World Rust Programming",
+            "rust program"
+        ));
     }
 
     #[test]

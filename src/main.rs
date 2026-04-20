@@ -7,29 +7,30 @@ mod search;
 
 use clap::Parser;
 use config::Cli;
-use memory::{
-    AssociateArgs, AssociateResult, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternResult,
-    ExecuteSkillArgs, ExecuteSkillResult, ForgetArgs, ForgetResult, GetObservationsArgs,
-    InMemoryStore, MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs,
-    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore,
-    SearchArgs, SearchResult, SearchResults, SkillMemory, TimelineArgs, TimelineResult,
-    AssignRoleArgs, AssignRoleResult, ExtractPersonaResult,
-};
-use search::{Fts5Search, SearchEngine};
 use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
-use memory::{detect_and_create_skill, find_skill, strengthen_co_activated, complete_pattern, extract_persona};
+use memory::{
+    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
+    CompletePatternArgs, CompletePatternResult, ExecuteSkillArgs, ExecuteSkillResult,
+    ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
+    MemoryStore, MemorySummary, MemoryTier, NoOpSlm, ObservationsResult, RecallArgs, RecallResult,
+    ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore, SearchArgs,
+    SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs, TimelineResult,
+};
+use memory::{
+    complete_pattern, detect_and_create_skill, extract_persona, find_skill, strengthen_co_activated,
+};
 use metrics::{
-    inc_associate, inc_forget, inc_prune, inc_recall, inc_remember, inc_reflect,
-    set_memory_count,
+    inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResult, ListResourcesResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResult, ResourceContents, Resource, RawResource,
+        RawResource, ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
     },
     service::{RequestContext, RoleServer},
 };
+use search::{Fts5Search, SearchEngine};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -45,6 +46,7 @@ struct CogniMemState {
     storage: Box<dyn MemoryStore>,
     search: Box<dyn SearchEngine + Send>,
     embedder: Box<dyn EmbeddingEngine + Send>,
+    slm: Box<dyn SlmEngine + Send>,
 }
 
 impl CogniMemState {
@@ -55,6 +57,7 @@ impl CogniMemState {
             Err(_) => Box::new(search::SubstringSearch),
         };
         let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
+        let slm: Box<dyn SlmEngine + Send> = Box::new(NoOpSlm);
         if let Ok(memories) = storage.load_all() {
             for m in &memories {
                 let emb = embedder.embed(&m.content);
@@ -63,7 +66,13 @@ impl CogniMemState {
                 search.index(m.id, &m.content, m.tier);
             }
         }
-        Self { graph, storage, search, embedder }
+        Self {
+            graph,
+            storage,
+            search,
+            embedder,
+            slm,
+        }
     }
 }
 
@@ -86,7 +95,11 @@ fn parse_args<T: serde::de::DeserializeOwned>(
     args: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, rmcp::ErrorData> {
     serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
-        rmcp::ErrorData::new(rmcp::model::ErrorCode(-32602), Cow::Owned(e.to_string()), None)
+        rmcp::ErrorData::new(
+            rmcp::model::ErrorCode(-32602),
+            Cow::Owned(e.to_string()),
+            None,
+        )
     })
 }
 
@@ -98,17 +111,27 @@ fn success_json<T: serde::Serialize>(data: &T) -> CallToolResult {
 }
 
 fn invalid_params(msg: &str) -> rmcp::ErrorData {
-    rmcp::ErrorData::new(rmcp::model::ErrorCode(-32602), Cow::Owned(msg.to_string()), None)
+    rmcp::ErrorData::new(
+        rmcp::model::ErrorCode(-32602),
+        Cow::Owned(msg.to_string()),
+        None,
+    )
 }
 
 fn tool_not_found() -> rmcp::ErrorData {
-    rmcp::ErrorData::new(rmcp::model::ErrorCode(-32601), Cow::Owned("Unknown tool".to_string()), None)
+    rmcp::ErrorData::new(
+        rmcp::model::ErrorCode(-32601),
+        Cow::Owned("Unknown tool".to_string()),
+        None,
+    )
 }
 
 const MAX_CONTENT_LEN: usize = 10_000;
 const MAX_ASSOCIATIONS: usize = 50;
 
-fn json_schema(json: serde_json::Value) -> std::sync::Arc<serde_json::Map<String, serde_json::Value>> {
+fn json_schema(
+    json: serde_json::Value,
+) -> std::sync::Arc<serde_json::Map<String, serde_json::Value>> {
     std::sync::Arc::new(json.as_object().cloned().unwrap())
 }
 
@@ -161,7 +184,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("associate"),
-                Cow::Borrowed("Create an association between two memories with an optional strength weight"),
+                Cow::Borrowed(
+                    "Create an association between two memories with an optional strength weight",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -186,7 +211,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("reflect"),
-                Cow::Borrowed("Run a consolidation cycle: decay activation, prune weak memories, promote strong ones, detect conflicts"),
+                Cow::Borrowed(
+                    "Run a consolidation cycle: decay activation, prune weak memories, promote strong ones, detect conflicts",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -197,7 +224,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("search"),
-                Cow::Borrowed("Search memories returning compact summaries (id, snippet, tier, activation)"),
+                Cow::Borrowed(
+                    "Search memories returning compact summaries (id, snippet, tier, activation)",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -233,7 +262,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("execute_skill"),
-                Cow::Borrowed("Look up a procedural skill by name and return its distilled pattern and steps"),
+                Cow::Borrowed(
+                    "Look up a procedural skill by name and return its distilled pattern and steps",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -244,7 +275,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("complete_pattern"),
-                Cow::Borrowed("Reconstruct likely full memories from a partial cue using Hebbian associations"),
+                Cow::Borrowed(
+                    "Reconstruct likely full memories from a partial cue using Hebbian associations",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -257,7 +290,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("extract_persona"),
-                Cow::Borrowed("Scan semantic memories and extract structured persona across 6 domains"),
+                Cow::Borrowed(
+                    "Scan semantic memories and extract structured persona across 6 domains",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {}
@@ -265,7 +300,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("assign_role"),
-                Cow::Borrowed("Assign RACI roles (responsible, accountable, consulted, informed) to a memory"),
+                Cow::Borrowed(
+                    "Assign RACI roles (responsible, accountable, consulted, informed) to a memory",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -332,15 +369,12 @@ impl ServerHandler for CogniMemServer {
             .iter()
             .map(|m| {
                 Resource::new(
-                    RawResource::new(
-                        format!("memory://{}/{}", m.tier, m.id),
-                        &m.content,
-                    )
-                    .with_description(format!(
-                        "Memory in {} tier with activation {:.3}",
-                        m.tier, m.metadata.base_activation
-                    ))
-                    .with_mime_type("application/json"),
+                    RawResource::new(format!("memory://{}/{}", m.tier, m.id), &m.content)
+                        .with_description(format!(
+                            "Memory in {} tier with activation {:.3}",
+                            m.tier, m.metadata.base_activation
+                        ))
+                        .with_mime_type("application/json"),
                     None,
                 )
             })
@@ -383,7 +417,10 @@ impl ServerHandler for CogniMemServer {
         })?;
 
         let json = serde_json::to_string(memory).unwrap_or_default();
-        Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.clone())]))
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            json,
+            uri.clone(),
+        )]))
     }
 }
 
@@ -444,8 +481,16 @@ impl CogniMemServer {
         }
 
         if !matches!(tier, MemoryTier::Procedural) {
-            let CogniMemState { graph, storage, search, embedder } = &mut *guard;
-            if let Some(skill_memory) = detect_and_create_skill(graph, embedder.as_ref(), &mut **search, &memory.content) {
+            let CogniMemState {
+                graph,
+                storage,
+                search,
+                embedder,
+                slm: _,
+            } = &mut *guard;
+            if let Some(skill_memory) =
+                detect_and_create_skill(graph, embedder.as_ref(), &mut **search, &memory.content)
+            {
                 if let Err(e) = storage.save(&skill_memory) {
                     error!("Failed to persist skill memory {}: {e}", skill_memory.id);
                 }
@@ -493,10 +538,16 @@ impl CogniMemServer {
                 None => guard.graph.get_all_memories(),
             }
             .into_iter()
-            .filter(|m| search::matches_query(&m.content, &query) && m.metadata.base_activation >= min_activation)
+            .filter(|m| {
+                search::matches_query(&m.content, &query)
+                    && m.metadata.base_activation >= min_activation
+            })
             .collect();
             fallback.sort_by(|a, b| {
-                b.metadata.base_activation.partial_cmp(&a.metadata.base_activation).unwrap()
+                b.metadata
+                    .base_activation
+                    .partial_cmp(&a.metadata.base_activation)
+                    .unwrap()
             });
             fallback.truncate(limit);
             let ids: Vec<uuid::Uuid> = fallback.iter().map(|m| m.id).collect();
@@ -521,7 +572,10 @@ impl CogniMemServer {
         expand_with_associations(&direct_ids, &mut results, &guard.graph);
 
         results.sort_by(|a, b| {
-            b.metadata.base_activation.partial_cmp(&a.metadata.base_activation).unwrap()
+            b.metadata
+                .base_activation
+                .partial_cmp(&a.metadata.base_activation)
+                .unwrap()
         });
         results.truncate(limit);
 
@@ -554,11 +608,13 @@ impl CogniMemServer {
         if let Some(mem) = guard.graph.get_memory(&args.from)
             && let Err(e) = guard.storage.save(mem)
         {
-error!("Failed to persist association for {}: {e}", args.from);
+            error!("Failed to persist association for {}: {e}", args.from);
         }
 
         inc_associate();
-        Ok(success_json(&AssociateResult::success(args.from, args.to, strength)))
+        Ok(success_json(&AssociateResult::success(
+            args.from, args.to, strength,
+        )))
     }
 
     async fn handle_forget(
@@ -603,13 +659,20 @@ error!("Failed to persist association for {}: {e}", args.from);
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args: ReflectArgs = parse_args(args)?;
         let intensity = args.intensity.unwrap_or_else(|| "light".to_string());
-        let strategy = args.conflict_strategy
+        let strategy = args
+            .conflict_strategy
             .as_deref()
             .and_then(|s| s.parse().ok())
             .unwrap_or_default();
 
         let mut guard = self.state.lock().await;
-        let CogniMemState { graph, storage, search, embedder } = &mut *guard;
+        let CogniMemState {
+            graph,
+            storage,
+            search,
+            embedder,
+            slm,
+        } = &mut *guard;
         let total = graph.len();
 
         if intensity == "full" {
@@ -621,6 +684,22 @@ error!("Failed to persist association for {}: {e}", args.from);
             }
 
             let conflicts = memory::consolidate(graph, embedder.as_ref());
+            let strategy = if args.conflict_strategy.is_some() {
+                strategy
+            } else {
+                let resolved = conflicts.first().map(|c| {
+                    let a = graph
+                        .get_memory(&c.memory_id_1)
+                        .map(|m| m.content.as_str())
+                        .unwrap_or("");
+                    let b = graph
+                        .get_memory(&c.memory_id_2)
+                        .map(|m| m.content.as_str())
+                        .unwrap_or("");
+                    slm.resolve_conflict(a, b)
+                });
+                resolved.unwrap_or(strategy)
+            };
             let resolved = memory::resolve_conflicts(graph, &conflicts, &strategy);
             for id in &resolved {
                 search.remove(id);
@@ -701,16 +780,22 @@ error!("Failed to persist association for {}: {e}", args.from);
         };
 
         results.sort_by(|a, b| {
-            b.metadata.base_activation.partial_cmp(&a.metadata.base_activation).unwrap()
+            b.metadata
+                .base_activation
+                .partial_cmp(&a.metadata.base_activation)
+                .unwrap()
         });
         results.truncate(limit);
 
-        let search_results: Vec<SearchResult> = results.iter().map(|m| SearchResult {
-            id: m.id,
-            snippet: m.content.chars().take(80).collect(),
-            tier: m.tier,
-            activation: m.metadata.base_activation,
-        }).collect();
+        let search_results: Vec<SearchResult> = results
+            .iter()
+            .map(|m| SearchResult {
+                id: m.id,
+                snippet: m.content.chars().take(80).collect(),
+                tier: m.tier,
+                activation: m.metadata.base_activation,
+            })
+            .collect();
 
         let ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         update_activation_for(&mut guard, &ids, now);
@@ -727,28 +812,45 @@ error!("Failed to persist association for {}: {e}", args.from);
         let window_secs = args.window_secs.unwrap_or(900);
 
         let guard = self.state.lock().await;
-        let memory = guard.graph.get_memory(&args.memory_id).ok_or_else(|| {
-            invalid_params(&format!("Memory not found: {}", args.memory_id))
-        })?;
+        let memory = guard
+            .graph
+            .get_memory(&args.memory_id)
+            .ok_or_else(|| invalid_params(&format!("Memory not found: {}", args.memory_id)))?;
 
         let center_time = memory.metadata.last_accessed;
         let center = MemorySummary::from(memory);
         let lower = center_time - window_secs;
         let upper = center_time + window_secs;
 
-        let before: Vec<MemorySummary> = guard.graph.get_all_memories()
+        let before: Vec<MemorySummary> = guard
+            .graph
+            .get_all_memories()
             .iter()
-            .filter(|m| m.id != args.memory_id && m.metadata.last_accessed >= lower && m.metadata.last_accessed <= center_time)
+            .filter(|m| {
+                m.id != args.memory_id
+                    && m.metadata.last_accessed >= lower
+                    && m.metadata.last_accessed <= center_time
+            })
             .map(|m| MemorySummary::from(*m))
             .collect();
 
-        let after: Vec<MemorySummary> = guard.graph.get_all_memories()
+        let after: Vec<MemorySummary> = guard
+            .graph
+            .get_all_memories()
             .iter()
-            .filter(|m| m.id != args.memory_id && m.metadata.last_accessed > center_time && m.metadata.last_accessed <= upper)
+            .filter(|m| {
+                m.id != args.memory_id
+                    && m.metadata.last_accessed > center_time
+                    && m.metadata.last_accessed <= upper
+            })
             .map(|m| MemorySummary::from(*m))
             .collect();
 
-        Ok(success_json(&TimelineResult { center, before, after }))
+        Ok(success_json(&TimelineResult {
+            center,
+            before,
+            after,
+        }))
     }
 
     async fn handle_get_observations(
@@ -758,11 +860,14 @@ error!("Failed to persist association for {}: {e}", args.from);
         let args: GetObservationsArgs = parse_args(args)?;
 
         let guard = self.state.lock().await;
-        let memory = guard.graph.get_memory(&args.memory_id).ok_or_else(|| {
-            invalid_params(&format!("Memory not found: {}", args.memory_id))
-        })?;
+        let memory = guard
+            .graph
+            .get_memory(&args.memory_id)
+            .ok_or_else(|| invalid_params(&format!("Memory not found: {}", args.memory_id)))?;
 
-        Ok(success_json(&ObservationsResult { memory: memory.clone() }))
+        Ok(success_json(&ObservationsResult {
+            memory: memory.clone(),
+        }))
     }
 
     async fn handle_execute_skill(
@@ -776,9 +881,8 @@ error!("Failed to persist association for {}: {e}", args.from);
         }
 
         let guard = self.state.lock().await;
-        let memory = find_skill(&guard.graph, &args.skill_name).ok_or_else(|| {
-            invalid_params(&format!("Skill not found: {}", args.skill_name))
-        })?;
+        let memory = find_skill(&guard.graph, &args.skill_name)
+            .ok_or_else(|| invalid_params(&format!("Skill not found: {}", args.skill_name)))?;
 
         let skill: SkillMemory = memory
             .content
@@ -809,7 +913,13 @@ error!("Failed to persist association for {}: {e}", args.from);
         let limit = args.limit.unwrap_or(5);
 
         let guard = self.state.lock().await;
-        let candidates = complete_pattern(&guard.graph, guard.embedder.as_ref(), &args.cue, tolerance, limit);
+        let candidates = complete_pattern(
+            &guard.graph,
+            guard.embedder.as_ref(),
+            &args.cue,
+            tolerance,
+            limit,
+        );
 
         Ok(success_json(&CompletePatternResult { candidates }))
     }
@@ -831,9 +941,10 @@ error!("Failed to persist association for {}: {e}", args.from);
         let args: AssignRoleArgs = parse_args(args)?;
         let mut guard = self.state.lock().await;
 
-        let memory = guard.graph.get_memory_mut(&args.memory_id).ok_or_else(|| {
-            invalid_params(&format!("Memory not found: {}", args.memory_id))
-        })?;
+        let memory = guard
+            .graph
+            .get_memory_mut(&args.memory_id)
+            .ok_or_else(|| invalid_params(&format!("Memory not found: {}", args.memory_id)))?;
 
         if let Some(r) = &args.responsible {
             memory.raci.responsible = Some(r.clone());
@@ -864,7 +975,11 @@ error!("Failed to persist association for {}: {e}", args.from);
     }
 }
 
-fn expand_with_associations<'a>(direct_ids: &[uuid::Uuid], results: &mut Vec<&'a CognitiveMemoryUnit>, graph: &'a memory::MemoryGraph) {
+fn expand_with_associations<'a>(
+    direct_ids: &[uuid::Uuid],
+    results: &mut Vec<&'a CognitiveMemoryUnit>,
+    graph: &'a memory::MemoryGraph,
+) {
     let expanded = graph.spreading_activation(direct_ids, 3, 0.5, 0.1);
     for (id, _, _) in &expanded {
         if let Some(mem) = graph.get_memory(id)
@@ -901,7 +1016,10 @@ async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_
             for id in &pruned {
                 guard.search.remove(id);
             }
-            tracing::info!("Pruned {} memories below activation threshold", pruned.len());
+            tracing::info!(
+                "Pruned {} memories below activation threshold",
+                pruned.len()
+            );
         }
     }
 }
@@ -1153,8 +1271,8 @@ async fn handle_metrics(mut stream: tokio::net::TcpStream) -> std::io::Result<()
     let mut buf = [0u8; 1024];
     let _n = stream.read(&mut buf).await?;
 
-    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_string()
-        + &metrics::encode();
+    let response =
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_string() + &metrics::encode();
 
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;

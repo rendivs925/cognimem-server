@@ -1,7 +1,7 @@
-use crate::embeddings::EmbeddingEngine;
-use crate::search::SearchEngine;
 use super::graph::MemoryGraph;
 use super::types::{CognitiveMemoryUnit, MemoryTier, SkillMemory};
+use crate::embeddings::EmbeddingEngine;
+use crate::search::SearchEngine;
 
 const MIN_PATTERN_OCCURRENCES: usize = 3;
 const SKILL_SIMILARITY_THRESHOLD: f32 = 0.65;
@@ -33,12 +33,7 @@ pub fn detect_and_create_skill(
 
     let source_ids: Vec<uuid::Uuid> = candidates.iter().map(|(m, _)| m.id).collect();
 
-    let skill = SkillMemory::new(
-        skill_name.clone(),
-        pattern,
-        steps,
-        source_ids,
-    );
+    let skill = SkillMemory::new(skill_name.clone(), pattern, steps, source_ids);
 
     let mut memory = CognitiveMemoryUnit::new(
         format!("[skill] {}", skill_name),
@@ -67,12 +62,17 @@ pub fn find_skill(graph: &MemoryGraph, name: &str) -> Option<CognitiveMemoryUnit
         .filter(|m| m.tier == MemoryTier::Procedural)
         .find(|m| {
             let lower = m.content.to_lowercase();
-            lower.starts_with(&prefix) || lower.contains(&format!("[skill] {}", name.to_lowercase()))
+            lower.starts_with(&prefix)
+                || lower.contains(&format!("[skill] {}", name.to_lowercase()))
         })
         .cloned()
 }
 
-fn find_similar_memories<'a>(graph: &'a MemoryGraph, embedder: &dyn EmbeddingEngine, content: &str) -> Vec<(&'a CognitiveMemoryUnit, f32)> {
+fn find_similar_memories<'a>(
+    graph: &'a MemoryGraph,
+    embedder: &dyn EmbeddingEngine,
+    content: &str,
+) -> Vec<(&'a CognitiveMemoryUnit, f32)> {
     let query_emb = embedder.embed(content);
     graph
         .vector_search(&query_emb, 20, SKILL_SIMILARITY_THRESHOLD)
@@ -92,7 +92,10 @@ fn extract_pattern(contents: &[&str]) -> String {
         return String::new();
     }
 
-    let words: Vec<Vec<&str>> = contents.iter().map(|c| c.split_whitespace().collect()).collect();
+    let words: Vec<Vec<&str>> = contents
+        .iter()
+        .map(|c| c.split_whitespace().collect())
+        .collect();
     let common: Vec<&str> = words
         .first()
         .map(|w| {
@@ -111,7 +114,10 @@ fn extract_pattern(contents: &[&str]) -> String {
 }
 
 fn extract_skill_name(contents: &[&str]) -> String {
-    let words: Vec<Vec<&str>> = contents.iter().map(|c| c.split_whitespace().collect()).collect();
+    let words: Vec<Vec<&str>> = contents
+        .iter()
+        .map(|c| c.split_whitespace().collect())
+        .collect();
 
     let mut common_words: Vec<&str> = words
         .first()
@@ -119,7 +125,10 @@ fn extract_skill_name(contents: &[&str]) -> String {
             w.iter()
                 .filter(|word| {
                     let lower = word.to_lowercase();
-                    word.len() > 3 && words.iter().all(|doc| doc.iter().any(|dw| dw.to_lowercase() == lower))
+                    word.len() > 3
+                        && words
+                            .iter()
+                            .all(|doc| doc.iter().any(|dw| dw.to_lowercase() == lower))
                 })
                 .take(4)
                 .copied()
@@ -168,7 +177,11 @@ mod tests {
 
     #[test]
     fn test_extract_skill_name_finds_common_words() {
-        let contents = vec!["deploy rust application to production", "deploy rust library to staging", "deploy rust server to production"];
+        let contents = vec![
+            "deploy rust application to production",
+            "deploy rust library to staging",
+            "deploy rust server to production",
+        ];
         let name = extract_skill_name(&contents);
         assert!(name.contains("deploy"));
         assert!(name.contains("rust"));
@@ -197,8 +210,12 @@ mod tests {
 
         graph.add_memory(make_memory("deploy rust app", MemoryTier::Episodic));
 
-        let result = detect_and_create_skill(&mut graph, &embedder, &mut search, "deploy rust server");
-        assert!(result.is_none(), "should not create skill with only 1 similar memory");
+        let result =
+            detect_and_create_skill(&mut graph, &embedder, &mut search, "deploy rust server");
+        assert!(
+            result.is_none(),
+            "should not create skill with only 1 similar memory"
+        );
     }
 
     #[test]
@@ -208,13 +225,21 @@ mod tests {
         let mut search = Fts5Search::new().unwrap();
 
         for i in 0..3 {
-            let mem = make_memory(&format!("deploy rust app version {}", i), MemoryTier::Episodic);
+            let mem = make_memory(
+                &format!("deploy rust app version {}", i),
+                MemoryTier::Episodic,
+            );
             let id = graph.add_memory(mem);
             let emb = embedder.embed(&format!("deploy rust app version {}", i));
             graph.set_embedding(id, emb);
         }
 
-        let skill = detect_and_create_skill(&mut graph, &embedder, &mut search, "deploy rust app version 3");
+        let skill = detect_and_create_skill(
+            &mut graph,
+            &embedder,
+            &mut search,
+            "deploy rust app version 3",
+        );
         assert!(skill.is_some());
         let skill = skill.unwrap();
         assert_eq!(skill.tier, MemoryTier::Procedural);

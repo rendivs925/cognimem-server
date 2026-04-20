@@ -88,7 +88,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-pub fn fuse_scores(fts_ids: &[uuid::Uuid], fts_weight: f32, vec_scores: &[(uuid::Uuid, f32)], vec_weight: f32) -> Vec<(uuid::Uuid, f32)> {
+pub fn fuse_scores(
+    fts_ids: &[uuid::Uuid],
+    fts_weight: f32,
+    vec_scores: &[(uuid::Uuid, f32)],
+    vec_weight: f32,
+) -> Vec<(uuid::Uuid, f32)> {
     let mut scores: std::collections::HashMap<uuid::Uuid, f32> = std::collections::HashMap::new();
 
     let fts_count = fts_ids.len().max(1) as f32;
@@ -130,7 +135,10 @@ mod tests {
         let sim_same = cosine_similarity(&v1, &v2);
         let sim_diff = cosine_similarity(&v1, &v3);
 
-        assert!(sim_same > sim_diff, "similar texts should have higher similarity: {sim_same} vs {sim_diff}");
+        assert!(
+            sim_same > sim_diff,
+            "similar texts should have higher similarity: {sim_same} vs {sim_diff}"
+        );
     }
 
     #[test]

@@ -2,12 +2,92 @@ use super::graph::MemoryGraph;
 use super::types::{PersonaDomain, PersonaProfile};
 
 const PERSONA_KEYWORDS: &[(PersonaDomain, &[&str])] = &[
-    (PersonaDomain::Biography, &["born", "grew up", "hometown", "family", "childhood", "education", "age", "lives in", "from", "born in"]),
-    (PersonaDomain::Experiences, &["visited", "traveled", "attended", "happened", "experienced", "went to", "saw", "encountered", "achieved", "completed"]),
-    (PersonaDomain::Preferences, &["prefer", "like", "enjoy", "love", "hate", "favorite", "always", "never", "best", "worst", "prefer"]),
-    (PersonaDomain::Social, &["friend", "colleague", "team", "group", "community", "partner", "collaborated", "worked with", "met", "mentor"]),
-    (PersonaDomain::Work, &["project", "deploy", "code", "build", "fix", "implement", "feature", "bug", "release", "task", "sprint", "deadline", "meeting", "repo"]),
-    (PersonaDomain::Psychometrics, &["always", "usually", "tend to", "typically", "style", "approach", "methodology", "workflow", "habit", "consistent"]),
+    (
+        PersonaDomain::Biography,
+        &[
+            "born",
+            "grew up",
+            "hometown",
+            "family",
+            "childhood",
+            "education",
+            "age",
+            "lives in",
+            "from",
+            "born in",
+        ],
+    ),
+    (
+        PersonaDomain::Experiences,
+        &[
+            "visited",
+            "traveled",
+            "attended",
+            "happened",
+            "experienced",
+            "went to",
+            "saw",
+            "encountered",
+            "achieved",
+            "completed",
+        ],
+    ),
+    (
+        PersonaDomain::Preferences,
+        &[
+            "prefer", "like", "enjoy", "love", "hate", "favorite", "always", "never", "best",
+            "worst", "prefer",
+        ],
+    ),
+    (
+        PersonaDomain::Social,
+        &[
+            "friend",
+            "colleague",
+            "team",
+            "group",
+            "community",
+            "partner",
+            "collaborated",
+            "worked with",
+            "met",
+            "mentor",
+        ],
+    ),
+    (
+        PersonaDomain::Work,
+        &[
+            "project",
+            "deploy",
+            "code",
+            "build",
+            "fix",
+            "implement",
+            "feature",
+            "bug",
+            "release",
+            "task",
+            "sprint",
+            "deadline",
+            "meeting",
+            "repo",
+        ],
+    ),
+    (
+        PersonaDomain::Psychometrics,
+        &[
+            "always",
+            "usually",
+            "tend to",
+            "typically",
+            "style",
+            "approach",
+            "methodology",
+            "workflow",
+            "habit",
+            "consistent",
+        ],
+    ),
 ];
 
 pub fn extract_persona(graph: &MemoryGraph) -> Vec<PersonaProfile> {
@@ -18,7 +98,10 @@ pub fn extract_persona(graph: &MemoryGraph) -> Vec<PersonaProfile> {
         let content_lower = mem.content.to_lowercase();
 
         for (domain, keywords) in PERSONA_KEYWORDS {
-            let match_count = keywords.iter().filter(|kw| content_lower.contains(*kw)).count();
+            let match_count = keywords
+                .iter()
+                .filter(|kw| content_lower.contains(*kw))
+                .count();
             if match_count > 0 {
                 let confidence = (match_count as f32 / keywords.len() as f32).min(1.0);
                 let entry = profiles.entry(*domain).or_insert((Vec::new(), 0.0));
@@ -45,7 +128,11 @@ pub fn extract_persona(graph: &MemoryGraph) -> Vec<PersonaProfile> {
         .collect()
 }
 
-fn summarize_domain(domain: &PersonaDomain, source_ids: &[uuid::Uuid], graph: &MemoryGraph) -> String {
+fn summarize_domain(
+    domain: &PersonaDomain,
+    source_ids: &[uuid::Uuid],
+    graph: &MemoryGraph,
+) -> String {
     let domain_name = match domain {
         PersonaDomain::Biography => "Biographical",
         PersonaDomain::Experiences => "Experiential",
@@ -66,7 +153,11 @@ fn summarize_domain(domain: &PersonaDomain, source_ids: &[uuid::Uuid], graph: &M
         .collect();
 
     format!("{} profile ({} memories):", domain_name, source_ids.len())
-        + &if snippets.is_empty() { String::new() } else { "\n".to_string() + &snippets.join("\n") }
+        + &if snippets.is_empty() {
+            String::new()
+        } else {
+            "\n".to_string() + &snippets.join("\n")
+        }
 }
 
 #[cfg(test)]
@@ -81,8 +172,14 @@ mod tests {
     #[test]
     fn test_extract_persona_detects_work() {
         let mut graph = MemoryGraph::new();
-        graph.add_memory(make_memory("Ideployed the rust project to production", MemoryTier::Semantic));
-        graph.add_memory(make_memory("Ifixed a bug in the auth module", MemoryTier::Semantic));
+        graph.add_memory(make_memory(
+            "Ideployed the rust project to production",
+            MemoryTier::Semantic,
+        ));
+        graph.add_memory(make_memory(
+            "Ifixed a bug in the auth module",
+            MemoryTier::Semantic,
+        ));
 
         let profiles = extract_persona(&graph);
         let work = profiles.iter().find(|p| p.domain == PersonaDomain::Work);
@@ -93,11 +190,19 @@ mod tests {
     #[test]
     fn test_extract_persona_detects_preferences() {
         let mut graph = MemoryGraph::new();
-        graph.add_memory(make_memory("Iprefer dark mode for all my editors", MemoryTier::Semantic));
-        graph.add_memory(make_memory("Ienjoy using vim over vscode", MemoryTier::Semantic));
+        graph.add_memory(make_memory(
+            "Iprefer dark mode for all my editors",
+            MemoryTier::Semantic,
+        ));
+        graph.add_memory(make_memory(
+            "Ienjoy using vim over vscode",
+            MemoryTier::Semantic,
+        ));
 
         let profiles = extract_persona(&graph);
-        let pref = profiles.iter().find(|p| p.domain == PersonaDomain::Preferences);
+        let pref = profiles
+            .iter()
+            .find(|p| p.domain == PersonaDomain::Preferences);
         assert!(pref.is_some());
         assert!(pref.unwrap().confidence > 0.0);
     }
@@ -112,9 +217,18 @@ mod tests {
     #[test]
     fn test_extract_persona_multiple_domains() {
         let mut graph = MemoryGraph::new();
-        graph.add_memory(make_memory("I built a new feature for the project", MemoryTier::Semantic));
-        graph.add_memory(make_memory("I prefer oat milk in my coffee", MemoryTier::Semantic));
-        graph.add_memory(make_memory("I met with my team yesterday", MemoryTier::Semantic));
+        graph.add_memory(make_memory(
+            "I built a new feature for the project",
+            MemoryTier::Semantic,
+        ));
+        graph.add_memory(make_memory(
+            "I prefer oat milk in my coffee",
+            MemoryTier::Semantic,
+        ));
+        graph.add_memory(make_memory(
+            "I met with my team yesterday",
+            MemoryTier::Semantic,
+        ));
 
         let profiles = extract_persona(&graph);
         assert!(profiles.len() >= 2, "should detect at least 2 domains");

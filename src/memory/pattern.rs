@@ -1,6 +1,6 @@
-use crate::embeddings::{cosine_similarity, EmbeddingEngine};
 use super::graph::MemoryGraph;
 use super::types::MemorySummary;
+use crate::embeddings::{EmbeddingEngine, cosine_similarity};
 use uuid::Uuid;
 
 const HEBBIAN_STRENGTHEN: f32 = 0.05;
@@ -16,7 +16,8 @@ pub fn strengthen_co_activated(graph: &mut MemoryGraph, ids: &[Uuid]) {
 
     for i in 0..ids.len() {
         for j in (i + 1)..ids.len() {
-            let current = graph.get_association_strength(&ids[i], &ids[j])
+            let current = graph
+                .get_association_strength(&ids[i], &ids[j])
                 .unwrap_or(0.0);
             let new_strength = (current + HEBBIAN_STRENGTHEN).min(MAX_STRENGTH);
             graph.update_association(&ids[i], &ids[j], new_strength);
@@ -61,7 +62,11 @@ pub fn complete_pattern(
                         }
                     })
                     .collect();
-                associated.sort_by(|a, b| b.activation.partial_cmp(&a.activation).unwrap_or(std::cmp::Ordering::Equal));
+                associated.sort_by(|a, b| {
+                    b.activation
+                        .partial_cmp(&a.activation)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 associated.truncate(limit);
 
                 Some(PatternCandidate {
@@ -75,7 +80,11 @@ pub fn complete_pattern(
         })
         .collect();
 
-    candidates.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     candidates.truncate(limit);
     candidates
 }
@@ -121,7 +130,10 @@ mod tests {
         strengthen_co_activated(&mut graph, &[id1, id2]);
 
         let strength = graph.get_association_strength(&id1, &id2).unwrap();
-        assert!(strength > 0.5, "association should be strengthened: got {strength}");
+        assert!(
+            strength > 0.5,
+            "association should be strengthened: got {strength}"
+        );
     }
 
     #[test]
@@ -146,7 +158,10 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
 
-        let id = graph.add_memory(make_memory("rust programming language", MemoryTier::Semantic));
+        let id = graph.add_memory(make_memory(
+            "rust programming language",
+            MemoryTier::Semantic,
+        ));
         let emb = embedder.embed("rust programming language");
         graph.set_embedding(id, emb);
 

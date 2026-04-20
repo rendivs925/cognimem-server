@@ -3,7 +3,20 @@ use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, IntoStaticStr, EnumString, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    Display,
+    IntoStaticStr,
+    EnumString,
+    Default,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum MemoryTier {
@@ -37,7 +50,19 @@ impl MemoryTier {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, IntoStaticStr, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    Display,
+    IntoStaticStr,
+    EnumString,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum PersonaDomain {
@@ -317,8 +342,18 @@ pub struct ReflectResult {
 }
 
 impl ReflectResult {
-    pub fn new(pruned_count: usize, promoted_count: usize, decayed_count: usize, conflicts: Vec<Conflict>) -> Self {
-        Self { pruned_count, promoted_count, decayed_count, conflicts }
+    pub fn new(
+        pruned_count: usize,
+        promoted_count: usize,
+        decayed_count: usize,
+        conflicts: Vec<Conflict>,
+    ) -> Self {
+        Self {
+            pruned_count,
+            promoted_count,
+            decayed_count,
+            conflicts,
+        }
     }
 }
 
@@ -397,7 +432,12 @@ pub struct SkillMemory {
 
 impl SkillMemory {
     pub fn new(name: String, pattern: String, steps: Vec<String>, source_ids: Vec<Uuid>) -> Self {
-        Self { name, pattern, steps, source_ids }
+        Self {
+            name,
+            pattern,
+            steps,
+            source_ids,
+        }
     }
 }
 

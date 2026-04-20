@@ -25,7 +25,10 @@ impl Default for InMemoryStore {
 
 impl MemoryStore for InMemoryStore {
     fn save(&self, memory: &CognitiveMemoryUnit) -> Result<()> {
-        self.memories.write().unwrap().insert(memory.id, memory.clone());
+        self.memories
+            .write()
+            .unwrap()
+            .insert(memory.id, memory.clone());
         Ok(())
     }
 

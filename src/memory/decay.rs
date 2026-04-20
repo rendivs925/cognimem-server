@@ -31,7 +31,10 @@ fn is_prunable(tier: MemoryTier, activation: f32, threshold: f32) -> bool {
     if activation >= threshold {
         return false;
     }
-    matches!(tier, MemoryTier::Sensory | MemoryTier::Working | MemoryTier::Episodic)
+    matches!(
+        tier,
+        MemoryTier::Sensory | MemoryTier::Working | MemoryTier::Episodic
+    )
 }
 
 pub fn promote_memories(graph: &mut MemoryGraph) -> usize {
@@ -39,8 +42,12 @@ pub fn promote_memories(graph: &mut MemoryGraph) -> usize {
         .get_all_memories()
         .iter()
         .filter_map(|m| match m.tier {
-            MemoryTier::Episodic if m.metadata.base_activation > 0.8 => Some((m.id, m.tier, MemoryTier::Semantic)),
-            MemoryTier::Semantic if m.metadata.base_activation > 0.9 => Some((m.id, m.tier, MemoryTier::Procedural)),
+            MemoryTier::Episodic if m.metadata.base_activation > 0.8 => {
+                Some((m.id, m.tier, MemoryTier::Semantic))
+            }
+            MemoryTier::Semantic if m.metadata.base_activation > 0.9 => {
+                Some((m.id, m.tier, MemoryTier::Procedural))
+            }
             _ => None,
         })
         .collect();
