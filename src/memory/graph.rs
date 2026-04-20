@@ -164,6 +164,11 @@ impl MemoryGraph {
         self.nodes.len()
     }
 
+    /// Returns whether the graph contains any memories.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
     /// Returns the number of memories in the specified tier.
     pub fn count_by_tier(&self, tier: MemoryTier) -> usize {
         self.by_tier.get(&tier).map(|s| s.len()).unwrap_or(0)

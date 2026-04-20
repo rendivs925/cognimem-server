@@ -3,6 +3,14 @@ name = "cognimem-server"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "cognimem_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cognimem-server"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.102"
 chrono = "0.4.44"
@@ -19,3 +27,14 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 rusqlite = { version = "0.34", features = ["bundled"] }
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "recall"
+harness = false
+
+[[bench]]
+name = "decay"
+harness = false

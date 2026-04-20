@@ -1,15 +1,10 @@
 mod config;
-mod embeddings;
-mod memory;
-mod metrics;
-mod rate_limit;
-mod search;
 
 use clap::Parser;
 use config::Cli;
-use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
-use memory::slm::RerankCandidate;
-use memory::{
+use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
+use cognimem_server::memory::slm::RerankCandidate;
+use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
     CompletePatternArgs, CompletePatternResult, ExecuteSkillArgs, ExecuteSkillResult,
     ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
@@ -17,12 +12,17 @@ use memory::{
     ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore, SearchArgs,
     SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs, TimelineResult,
 };
-use memory::{
+use cognimem_server::memory::{
     complete_pattern, detect_and_create_skill, extract_persona, find_skill, strengthen_co_activated,
 };
-use metrics::{
+use cognimem_server::memory::{
+    apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
+    resolve_conflicts, MemoryGraph,
+};
+use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
 };
+use cognimem_server::search::{Fts5Search, SearchEngine};
 use rmcp::{
     ServerHandler, ServiceExt,
     model::{
@@ -31,7 +31,6 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
 };
-use search::{Fts5Search, SearchEngine};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -43,7 +42,7 @@ use tokio::sync::Mutex;
 use tracing::error;
 
 struct CogniMemState {
-    graph: memory::MemoryGraph,
+    graph: MemoryGraph,
     storage: Box<dyn MemoryStore>,
     search: Box<dyn SearchEngine + Send>,
     embedder: Box<dyn EmbeddingEngine + Send>,
@@ -52,12 +51,12 @@ struct CogniMemState {
 
 impl CogniMemState {
     fn new(storage: Box<dyn MemoryStore>) -> Self {
-        let mut graph = memory::MemoryGraph::new();
+        let mut graph = MemoryGraph::new();
         let mut search: Box<dyn SearchEngine + Send> = match Fts5Search::new() {
             Ok(fts) => Box::new(fts),
             Err(e) => {
                 tracing::warn!("Failed to initialize FTS5 search, falling back to substring: {e}");
-                Box::new(search::SubstringSearch)
+                Box::new(cognimem_server::search::SubstringSearch)
             }
         };
         let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
@@ -88,14 +87,14 @@ impl CogniMemState {
 #[derive(Clone)]
 struct CogniMemServer {
     state: Arc<Mutex<CogniMemState>>,
-    rate_limiter: Arc<rate_limit::RateLimiter>,
+    rate_limiter: Arc<cognimem_server::rate_limit::RateLimiter>,
 }
 
 impl CogniMemServer {
     fn new(state: Arc<Mutex<CogniMemState>>) -> Self {
         Self {
             state,
-            rate_limiter: Arc::new(rate_limit::RateLimiter::new(100, 60)),
+            rate_limiter: Arc::new(cognimem_server::rate_limit::RateLimiter::new(100, 60)),
         }
     }
 }
@@ -575,7 +574,7 @@ impl CogniMemServer {
             }
             .into_iter()
             .filter(|m| {
-                search::matches_query(&m.content, &query)
+                cognimem_server::search::matches_query(&m.content, &query)
                     && m.metadata.base_activation >= min_activation
             })
             .collect();
@@ -733,14 +732,14 @@ impl CogniMemServer {
         let total = graph.len();
 
         if intensity == "full" {
-            memory::apply_decay_to_all(graph);
+            apply_decay_to_all(graph);
 
-            let pruned_ids = memory::prune_below_threshold(graph, 0.01);
+            let pruned_ids = prune_below_threshold(graph, 0.01);
             for id in &pruned_ids {
                 search.remove(id);
             }
 
-            let conflicts = memory::consolidate(graph, embedder.as_ref());
+            let conflicts = consolidate(graph, embedder.as_ref());
             let strategy = if args.conflict_strategy.is_some() {
                 strategy
             } else {
@@ -757,7 +756,7 @@ impl CogniMemServer {
                 });
                 resolved.unwrap_or(strategy)
             };
-            let resolved = memory::resolve_conflicts(graph, &conflicts, &strategy);
+            let resolved = resolve_conflicts(graph, &conflicts, &strategy);
             for id in &resolved {
                 search.remove(id);
                 if let Err(e) = storage.delete(id) {
@@ -765,7 +764,7 @@ impl CogniMemServer {
                 }
             }
 
-            let promoted = memory::promote_memories(graph);
+            let promoted = promote_memories(graph);
 
             for mem in graph.get_all_memories() {
                 if let Err(e) = storage.save(mem) {
@@ -784,8 +783,8 @@ impl CogniMemServer {
                 conflicts,
             )))
         } else {
-            memory::apply_decay_to_all(graph);
-            let conflicts = memory::detect_conflicts(graph, embedder.as_ref());
+            apply_decay_to_all(graph);
+            let conflicts = detect_conflicts(graph, embedder.as_ref());
 
             for mem in graph.get_all_memories() {
                 if let Err(e) = storage.save(mem) {
@@ -827,7 +826,7 @@ impl CogniMemServer {
                 None => guard.graph.get_all_memories(),
             }
             .into_iter()
-            .filter(|m| search::matches_query(&m.content, &args.query.to_lowercase()))
+            .filter(|m| cognimem_server::search::matches_query(&m.content, &args.query.to_lowercase()))
             .collect()
         } else {
             fused
@@ -1046,7 +1045,7 @@ impl CogniMemServer {
 fn expand_with_associations<'a>(
     direct_ids: &[uuid::Uuid],
     results: &mut Vec<&'a CognitiveMemoryUnit>,
-    graph: &'a memory::MemoryGraph,
+    graph: &'a MemoryGraph,
 ) {
     let expanded = graph.spreading_activation(direct_ids, 3, 0.5, 0.1);
     for (id, _, _) in &expanded {
@@ -1078,8 +1077,8 @@ async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_
     loop {
         ticker.tick().await;
         let mut guard = state.lock().await;
-        memory::apply_decay_to_all(&mut guard.graph);
-        let pruned = memory::prune_below_threshold(&mut guard.graph, prune_threshold);
+        apply_decay_to_all(&mut guard.graph);
+        let pruned = prune_below_threshold(&mut guard.graph, prune_threshold);
         if !pruned.is_empty() {
             for id in &pruned {
                 guard.search.remove(id);
@@ -1126,7 +1125,7 @@ async fn run_client_bridge(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    metrics::init();
+    cognimem_server::metrics::init();
 
     let socket_path = socket_path_for(&cli);
     ensure_parent_dir(Path::new(&cli.data_path))?;
@@ -1342,7 +1341,7 @@ async fn handle_metrics(mut stream: tokio::net::TcpStream) -> std::io::Result<()
     let _n = stream.read(&mut buf).await?;
 
     let response =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_string() + &metrics::encode();
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_string() + &cognimem_server::metrics::encode();
 
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
