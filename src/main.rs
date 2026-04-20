@@ -1011,7 +1011,20 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let _ = parse_args::<serde_json::Map<String, serde_json::Value>>(args)?;
         let guard = self.state.lock().await;
-        let profiles = extract_persona(&guard.graph);
+
+        let semantic_memories: Vec<String> = guard
+            .graph
+            .get_by_tier(MemoryTier::Semantic)
+            .iter()
+            .map(|m| m.content.clone())
+            .collect();
+
+        let profiles = if semantic_memories.len() >= 3 {
+            guard.slm.extract_persona(&semantic_memories)
+        } else {
+            extract_persona(&guard.graph)
+        };
+
         Ok(success_json(&ExtractPersonaResult { profiles }))
     }
 

@@ -1,4 +1,4 @@
-use super::types::ConflictResolution;
+use super::types::{ConflictResolution, PersonaProfile};
 
 /// A small-language-model interface for advanced memory operations.
 ///
@@ -13,6 +13,8 @@ pub trait SlmEngine: Send {
     fn resolve_conflict(&self, content_a: &str, content_b: &str) -> ConflictResolution;
     /// Generates a completion hint for a partial pattern cue given surrounding context.
     fn complete_pattern_hint(&self, partial: &str, context: &[&str]) -> String;
+    /// Extracts structured persona profiles from memory content.
+    fn extract_persona(&self, memories: &[String]) -> Vec<PersonaProfile>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -56,6 +58,10 @@ impl SlmEngine for NoOpSlm {
 
     fn complete_pattern_hint(&self, partial: &str, _context: &[&str]) -> String {
         partial.to_string()
+    }
+
+    fn extract_persona(&self, _memories: &[String]) -> Vec<PersonaProfile> {
+        Vec::new()
     }
 }
 

@@ -1,4 +1,4 @@
-use super::types::ConflictResolution;
+use super::types::{ConflictResolution, PersonaProfile};
 use super::slm::{RerankCandidate, SlmEngine};
 use serde::{Deserialize, Serialize};
 
@@ -163,6 +163,39 @@ impl SlmEngine for OllamaSlm {
         );
 
         self.generate(&prompt, 50).unwrap_or_else(|| partial.to_string())
+    }
+
+    fn extract_persona(&self, memories: &[String]) -> Vec<PersonaProfile> {
+        if memories.is_empty() {
+            return Vec::new();
+        }
+
+        let memories_text = memories
+            .iter()
+            .enumerate()
+            .map(|(i, m)| format!("{}. {}", i + 1, m))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            r#"Analyze these memories and extract a structured persona profile.
+Return a JSON array with up to 6 entries, one per domain found. Use this format:
+[{{"domain": "work", "summary": "2-3 sentence summary", "confidence": 0.85}}]
+
+Available domains: biography, experiences, preferences, social, work, psychometrics
+
+Memories:
+{}
+
+Return only valid JSON array, nothing else:"#,
+            memories_text
+        );
+
+        let result = self.generate(&prompt, 500);
+
+        result
+            .and_then(|r| serde_json::from_str(&r).ok())
+            .unwrap_or_default()
     }
 }
 
