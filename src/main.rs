@@ -8,15 +8,15 @@ mod search;
 use clap::Parser;
 use config::Cli;
 use memory::{
-    AssociateArgs, AssociateResult, CognitiveMemoryUnit, ExecuteSkillArgs, ExecuteSkillResult,
-    ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore, MemoryStore, MemorySummary,
-    MemoryTier, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
-    RememberArgs, RememberResult, RocksDbStore, SearchArgs, SearchResult, SearchResults,
-    SkillMemory, TimelineArgs, TimelineResult,
+    AssociateArgs, AssociateResult, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternResult,
+    ExecuteSkillArgs, ExecuteSkillResult, ForgetArgs, ForgetResult, GetObservationsArgs,
+    InMemoryStore, MemoryStore, MemorySummary, MemoryTier, ObservationsResult,
+    RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
+    RocksDbStore, SearchArgs, SearchResult, SearchResults, SkillMemory, TimelineArgs, TimelineResult,
 };
 use search::{Fts5Search, SearchEngine};
 use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
-use memory::{detect_and_create_skill, find_skill};
+use memory::{detect_and_create_skill, find_skill, strengthen_co_activated, complete_pattern};
 use metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_remember, inc_reflect,
     set_memory_count,
@@ -241,6 +241,19 @@ impl ServerHandler for CogniMemServer {
                     "required": ["skill_name"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("complete_pattern"),
+                Cow::Borrowed("Reconstruct likely full memories from a partial cue using Hebbian associations"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "cue": { "type": "string", "description": "Partial text cue to complete" },
+                        "tolerance": { "type": "number", "description": "Minimum similarity threshold (default 0.3)" },
+                        "limit": { "type": "integer", "description": "Max candidates (default 5)" }
+                    },
+                    "required": ["cue"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -275,6 +288,7 @@ impl ServerHandler for CogniMemServer {
             "timeline" => self.handle_timeline(args).await,
             "get_observations" => self.handle_get_observations(args).await,
             "execute_skill" => self.handle_execute_skill(args).await,
+            "complete_pattern" => self.handle_complete_pattern(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -487,6 +501,7 @@ impl CogniMemServer {
 
         let recalled_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         update_activation_for(&mut guard, &recalled_ids, now);
+        strengthen_co_activated(&mut guard.graph, &recalled_ids);
 
         let memories: Vec<MemorySummary> = recalled_ids
             .iter()
@@ -752,6 +767,25 @@ error!("Failed to persist association for {}: {e}", args.from);
             steps: skill.steps,
             source_count: skill.source_ids.len(),
         }))
+    }
+
+    async fn handle_complete_pattern(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: CompletePatternArgs = parse_args(args)?;
+
+        if args.cue.is_empty() {
+            return Err(invalid_params("cue must not be empty"));
+        }
+
+        let tolerance = args.tolerance.unwrap_or(0.3);
+        let limit = args.limit.unwrap_or(5);
+
+        let guard = self.state.lock().await;
+        let candidates = complete_pattern(&guard.graph, guard.embedder.as_ref(), &args.cue, tolerance, limit);
+
+        Ok(success_json(&CompletePatternResult { candidates }))
     }
 }
 

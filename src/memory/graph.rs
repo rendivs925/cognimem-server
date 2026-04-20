@@ -149,6 +149,15 @@ impl MemoryGraph {
         self.by_tier.entry(new_tier).or_default().insert(*id);
     }
 
+    pub fn get_association_strength(&self, from: &Uuid, to: &Uuid) -> Option<f32> {
+        self.edges.get(&(*from, *to)).copied()
+    }
+
+    pub fn update_association(&mut self, from: &Uuid, to: &Uuid, strength: f32) {
+        let clamped = strength.clamp(0.0, 1.0);
+        self.edges.insert((*from, *to), clamped);
+    }
+
     pub fn set_embedding(&mut self, id: Uuid, embedding: Vec<f32>) {
         self.embeddings.insert(id, embedding);
     }
