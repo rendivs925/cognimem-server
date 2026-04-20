@@ -153,6 +153,10 @@ impl MemoryGraph {
         self.embeddings.insert(id, embedding);
     }
 
+    pub fn get_embedding(&self, id: &Uuid) -> Option<&Vec<f32>> {
+        self.embeddings.get(id)
+    }
+
     pub fn vector_search(&self, query_embedding: &[f32], limit: usize, min_similarity: f32) -> Vec<(Uuid, f32)> {
         let mut scores: Vec<(Uuid, f32)> = self
             .embeddings

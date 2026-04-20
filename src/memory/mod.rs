@@ -1,3 +1,4 @@
+pub mod consolidation;
 pub mod decay;
 pub mod graph;
 pub mod in_memory;
@@ -5,6 +6,7 @@ pub mod storage;
 pub mod store;
 pub mod types;
 
+pub use consolidation::{consolidate, detect_conflicts, resolve_conflicts};
 pub use decay::{apply_decay_to_all, promote_memories, prune_below_threshold};
 pub use graph::MemoryGraph;
 pub use in_memory::InMemoryStore;

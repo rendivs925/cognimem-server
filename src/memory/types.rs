@@ -232,9 +232,50 @@ impl ForgetResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Conflict {
+    pub memory_id_1: Uuid,
+    pub memory_id_2: Uuid,
+    pub similarity: f32,
+    pub tier: MemoryTier,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictResolution {
+    #[default]
+    LatestWins,
+    KeepBoth,
+    HumanDecide,
+}
+
+impl std::fmt::Display for ConflictResolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConflictResolution::LatestWins => write!(f, "latest_wins"),
+            ConflictResolution::KeepBoth => write!(f, "keep_both"),
+            ConflictResolution::HumanDecide => write!(f, "human_decide"),
+        }
+    }
+}
+
+impl std::str::FromStr for ConflictResolution {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "latest_wins" => Ok(ConflictResolution::LatestWins),
+            "keep_both" => Ok(ConflictResolution::KeepBoth),
+            "human_decide" => Ok(ConflictResolution::HumanDecide),
+            _ => Err(format!("unknown conflict resolution: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflectArgs {
     #[serde(default)]
     pub intensity: Option<String>,
+    #[serde(default)]
+    pub conflict_strategy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,11 +283,12 @@ pub struct ReflectResult {
     pub pruned_count: usize,
     pub promoted_count: usize,
     pub decayed_count: usize,
+    pub conflicts: Vec<Conflict>,
 }
 
 impl ReflectResult {
-    pub fn new(pruned_count: usize, promoted_count: usize, decayed_count: usize) -> Self {
-        Self { pruned_count, promoted_count, decayed_count }
+    pub fn new(pruned_count: usize, promoted_count: usize, decayed_count: usize, conflicts: Vec<Conflict>) -> Self {
+        Self { pruned_count, promoted_count, decayed_count, conflicts }
     }
 }
 

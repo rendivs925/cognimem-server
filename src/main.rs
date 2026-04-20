@@ -183,11 +183,12 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("reflect"),
-                Cow::Borrowed("Run a consolidation cycle: decay activation, prune weak memories, promote strong ones"),
+                Cow::Borrowed("Run a consolidation cycle: decay activation, prune weak memories, promote strong ones, detect conflicts"),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "intensity": { "type": "string", "enum": ["light", "full"], "description": "light=decay only, full=decay+prune+promote" }
+                        "intensity": { "type": "string", "enum": ["light", "full"], "description": "light=decay only, full=decay+prune+promote+consolidate" },
+                        "conflict_strategy": { "type": "string", "enum": ["latest_wins", "keep_both", "human_decide"], "description": "How to resolve detected conflicts (default: latest_wins)" }
                     }
                 })),
             ),
@@ -537,35 +538,65 @@ error!("Failed to persist association for {}: {e}", args.from);
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args: ReflectArgs = parse_args(args)?;
         let intensity = args.intensity.unwrap_or_else(|| "light".to_string());
+        let strategy = args.conflict_strategy
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
 
         let mut guard = self.state.lock().await;
-        let total = guard.graph.len();
+        let CogniMemState { graph, storage, search, embedder } = &mut *guard;
+        let total = graph.len();
 
-        memory::apply_decay_to_all(&mut guard.graph);
+        if intensity == "full" {
+            memory::apply_decay_to_all(graph);
 
-        let pruned_ids = if intensity == "full" {
-            memory::prune_below_threshold(&mut guard.graph, 0.01)
-        } else {
-            Vec::new()
-        };
-
-        for id in &pruned_ids {
-            guard.search.remove(id);
-        }
-
-        let promoted = memory::promote_memories(&mut guard.graph);
-
-        for mem in guard.graph.get_all_memories() {
-            if let Err(e) = guard.storage.save(mem) {
-                error!("Failed to persist reflected memory {}: {e}", mem.id);
+            let pruned_ids = memory::prune_below_threshold(graph, 0.01);
+            for id in &pruned_ids {
+                search.remove(id);
             }
+
+            let conflicts = memory::consolidate(graph, embedder.as_ref());
+            let resolved = memory::resolve_conflicts(graph, &conflicts, &strategy);
+            for id in &resolved {
+                search.remove(id);
+                if let Err(e) = storage.delete(id) {
+                    error!("Failed to delete resolved conflict memory {}: {e}", id);
+                }
+            }
+
+            let promoted = memory::promote_memories(graph);
+
+            for mem in graph.get_all_memories() {
+                if let Err(e) = storage.save(mem) {
+                    error!("Failed to persist reflected memory {}: {e}", mem.id);
+                }
+            }
+
+            inc_reflect();
+            inc_prune(pruned_ids.len() as u64 + resolved.len() as u64);
+            set_memory_count(graph.len() as u64);
+
+            Ok(success_json(&ReflectResult::new(
+                pruned_ids.len() + resolved.len(),
+                promoted,
+                total,
+                conflicts,
+            )))
+        } else {
+            memory::apply_decay_to_all(graph);
+            let conflicts = memory::detect_conflicts(graph, embedder.as_ref());
+
+            for mem in graph.get_all_memories() {
+                if let Err(e) = storage.save(mem) {
+                    error!("Failed to persist reflected memory {}: {e}", mem.id);
+                }
+            }
+
+            inc_reflect();
+            set_memory_count(graph.len() as u64);
+
+            Ok(success_json(&ReflectResult::new(0, 0, total, conflicts)))
         }
-
-        inc_reflect();
-        inc_prune(pruned_ids.len() as u64);
-        set_memory_count(guard.graph.len() as u64);
-
-        Ok(success_json(&ReflectResult::new(pruned_ids.len(), promoted, total)))
     }
 
     async fn handle_search(
