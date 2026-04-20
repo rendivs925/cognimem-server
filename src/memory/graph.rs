@@ -147,7 +147,7 @@ impl MemoryGraph {
                     self.get_memory(id)
                         .map(|m| (m.id, m.metadata.base_activation))
                 })
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(id, _)| id)
         })
     }

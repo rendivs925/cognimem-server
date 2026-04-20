@@ -2,6 +2,7 @@ use super::graph::MemoryGraph;
 use super::types::{CognitiveMemoryUnit, MemoryTier, SkillMemory};
 use crate::embeddings::EmbeddingEngine;
 use crate::search::SearchEngine;
+use tracing::error;
 
 const MIN_PATTERN_OCCURRENCES: usize = 3;
 const SKILL_SIMILARITY_THRESHOLD: f32 = 0.65;
@@ -43,7 +44,13 @@ pub fn detect_and_create_skill(
     );
     memory.metadata.base_activation = 1.0;
 
-    let skill_json = serde_json::to_string(&skill).unwrap_or_default();
+    let skill_json = serde_json::to_string(&skill).unwrap_or_else(|e| {
+        error!("Failed to serialize skill memory: {e}");
+        format!(
+            "{{\"name\":\"{}\",\"pattern\":\"\",\"steps\":[],\"source_ids\":[]}}",
+            skill.name
+        )
+    });
     memory.content.push_str(&format!("\n{}", skill_json));
 
     let id = graph.add_memory(memory.clone());

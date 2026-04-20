@@ -1,5 +1,6 @@
 use crate::memory::MemoryTier;
 use rusqlite::{Connection, params};
+use tracing::warn;
 use uuid::Uuid;
 
 pub trait SearchEngine {
@@ -47,21 +48,21 @@ impl Fts5Search {
 impl SearchEngine for Fts5Search {
     fn index(&mut self, id: Uuid, content: &str, tier: MemoryTier) {
         let tier_str: &str = tier.into();
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO memory_index (id, content, tier) VALUES (?1, ?2, ?3)",
-                params![id.to_string(), content, tier_str],
-            )
-            .ok();
+        if let Err(e) = self.conn.execute(
+            "INSERT OR REPLACE INTO memory_index (id, content, tier) VALUES (?1, ?2, ?3)",
+            params![id.to_string(), content, tier_str],
+        ) {
+            warn!("Failed to index memory {id} in FTS5: {e}");
+        }
     }
 
     fn remove(&mut self, id: &Uuid) {
-        self.conn
-            .execute(
-                "DELETE FROM memory_index WHERE id = ?1",
-                params![id.to_string()],
-            )
-            .ok();
+        if let Err(e) = self.conn.execute(
+            "DELETE FROM memory_index WHERE id = ?1",
+            params![id.to_string()],
+        ) {
+            warn!("Failed to remove memory {id} from FTS5 index: {e}");
+        }
     }
 
     fn search(&self, query: &str, tier: Option<MemoryTier>, limit: usize) -> Vec<Uuid> {

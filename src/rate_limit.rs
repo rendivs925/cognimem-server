@@ -25,7 +25,7 @@ impl RateLimiter {
     }
 
     pub fn allow(&self) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("rate limiter mutex not poisoned");
         let elapsed = state.window_start.elapsed().as_secs();
         if elapsed >= self.window_secs {
             state.count = 0;

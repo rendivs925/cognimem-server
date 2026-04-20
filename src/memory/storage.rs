@@ -3,6 +3,7 @@ use super::types::CognitiveMemoryUnit;
 use anyhow::Result;
 use rocksdb::DB;
 use std::path::Path;
+use tracing::warn;
 use uuid::Uuid;
 
 pub struct RocksDbStore {
@@ -32,8 +33,12 @@ impl MemoryStore for RocksDbStore {
         let mut memories = Vec::new();
         for item in self.db.iterator(rocksdb::IteratorMode::Start) {
             let (_, value) = item?;
-            if let Ok(memory) = serde_json::from_slice::<CognitiveMemoryUnit>(&value) {
-                memories.push(memory);
+            match serde_json::from_slice::<CognitiveMemoryUnit>(&value) {
+                Ok(memory) => memories.push(memory),
+                Err(e) => {
+                    let key_hint = String::from_utf8_lossy(&value[..value.len().min(64)]);
+                    warn!("Skipping corrupted memory entry: {e} (data: {key_hint}...)");
+                }
             }
         }
         Ok(memories)

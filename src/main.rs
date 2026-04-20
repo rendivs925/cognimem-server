@@ -8,6 +8,7 @@ mod search;
 use clap::Parser;
 use config::Cli;
 use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
+use memory::slm::RerankCandidate;
 use memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
     CompletePatternArgs, CompletePatternResult, ExecuteSkillArgs, ExecuteSkillResult,
@@ -54,17 +55,25 @@ impl CogniMemState {
         let mut graph = memory::MemoryGraph::new();
         let mut search: Box<dyn SearchEngine + Send> = match Fts5Search::new() {
             Ok(fts) => Box::new(fts),
-            Err(_) => Box::new(search::SubstringSearch),
+            Err(e) => {
+                tracing::warn!("Failed to initialize FTS5 search, falling back to substring: {e}");
+                Box::new(search::SubstringSearch)
+            }
         };
         let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
         let slm: Box<dyn SlmEngine + Send> = Box::new(NoOpSlm);
-        if let Ok(memories) = storage.load_all() {
-            for m in &memories {
-                let emb = embedder.embed(&m.content);
-                graph.add_memory(m.clone());
-                graph.set_embedding(m.id, emb);
-                search.index(m.id, &m.content, m.tier);
+        let memories = match storage.load_all() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("Failed to load memories from storage: {e}");
+                Vec::new()
             }
+        };
+        for m in &memories {
+            let emb = embedder.embed(&m.content);
+            graph.add_memory(m.clone());
+            graph.set_embedding(m.id, emb);
+            search.index(m.id, &m.content, m.tier);
         }
         Self {
             graph,
@@ -104,10 +113,23 @@ fn parse_args<T: serde::de::DeserializeOwned>(
 }
 
 fn success_json<T: serde::Serialize>(data: &T) -> CallToolResult {
-    let json = serde_json::to_value(data).unwrap_or_default();
-    CallToolResult::success(vec![rmcp::model::Content::text(
-        serde_json::to_string(&json).unwrap_or_default(),
-    )])
+    match serde_json::to_value(data) {
+        Ok(json) => match serde_json::to_string(&json) {
+            Ok(text) => CallToolResult::success(vec![rmcp::model::Content::text(text)]),
+            Err(e) => {
+                tracing::error!("Failed to serialize JSON response: {e}");
+                CallToolResult::success(vec![rmcp::model::Content::text(
+                    r#"{"error":"serialization failed"}"#.to_string(),
+                )])
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to convert response to JSON value: {e}");
+            CallToolResult::success(vec![rmcp::model::Content::text(
+                r#"{"error":"serialization failed"}"#.to_string(),
+            )])
+        }
+    }
 }
 
 fn invalid_params(msg: &str) -> rmcp::ErrorData {
@@ -132,7 +154,11 @@ const MAX_ASSOCIATIONS: usize = 50;
 fn json_schema(
     json: serde_json::Value,
 ) -> std::sync::Arc<serde_json::Map<String, serde_json::Value>> {
-    std::sync::Arc::new(json.as_object().cloned().unwrap())
+    std::sync::Arc::new(
+        json.as_object()
+            .cloned()
+            .expect("json_schema input must be a JSON object"),
+    )
 }
 
 const TIER_ENUM: &[&str] = &["sensory", "working", "episodic", "semantic", "procedural"];
@@ -416,7 +442,10 @@ impl ServerHandler for CogniMemServer {
             )
         })?;
 
-        let json = serde_json::to_string(memory).unwrap_or_default();
+        let json = serde_json::to_string(memory).unwrap_or_else(|e| {
+            tracing::error!("Failed to serialize memory for resource read: {e}");
+            format!("{{\"error\":\"serialization failed: {e}\"}}")
+        });
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
             json,
             uri.clone(),
@@ -473,7 +502,12 @@ impl CogniMemServer {
         }
 
         guard.graph.add_memory(memory.clone());
-        guard.search.index(memory_id, &memory.content, memory.tier);
+        let compressed = guard.slm.compress(&memory.content);
+        guard.search.index(
+            memory_id,
+            &format!("{} {}", memory.content, compressed),
+            memory.tier,
+        );
         let embedding = guard.embedder.embed(&memory.content);
         guard.graph.set_embedding(memory_id, embedding);
         if let Err(e) = guard.storage.save(&memory) {
@@ -486,11 +520,13 @@ impl CogniMemServer {
                 storage,
                 search,
                 embedder,
-                slm: _,
+                slm,
             } = &mut *guard;
             if let Some(skill_memory) =
                 detect_and_create_skill(graph, embedder.as_ref(), &mut **search, &memory.content)
             {
+                let skill_compressed = slm.compress(&skill_memory.content);
+                search.index(skill_memory.id, &skill_compressed, skill_memory.tier);
                 if let Err(e) = storage.save(&skill_memory) {
                     error!("Failed to persist skill memory {}: {e}", skill_memory.id);
                 }
@@ -547,7 +583,7 @@ impl CogniMemServer {
                 b.metadata
                     .base_activation
                     .partial_cmp(&a.metadata.base_activation)
-                    .unwrap()
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             fallback.truncate(limit);
             let ids: Vec<uuid::Uuid> = fallback.iter().map(|m| m.id).collect();
@@ -575,9 +611,30 @@ impl CogniMemServer {
             b.metadata
                 .base_activation
                 .partial_cmp(&a.metadata.base_activation)
-                .unwrap()
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
-        results.truncate(limit);
+
+        let slm_results: Vec<usize> = {
+            let candidates: Vec<RerankCandidate> = results
+                .iter()
+                .map(|m| RerankCandidate {
+                    id: m.id,
+                    content: m.content.clone(),
+                    score: m.metadata.base_activation,
+                })
+                .collect();
+            guard.slm.rerank(&candidates, &query, limit)
+        };
+        if !slm_results.is_empty() {
+            let reranked: Vec<&CognitiveMemoryUnit> = slm_results
+                .iter()
+                .filter_map(|&i| results.get(i).copied())
+                .collect();
+            results = reranked;
+            results.truncate(limit);
+        } else {
+            results.truncate(limit);
+        }
 
         let recalled_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         update_activation_for(&mut guard, &recalled_ids, now);
@@ -783,7 +840,7 @@ impl CogniMemServer {
             b.metadata
                 .base_activation
                 .partial_cmp(&a.metadata.base_activation)
-                .unwrap()
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         results.truncate(limit);
 
@@ -913,13 +970,24 @@ impl CogniMemServer {
         let limit = args.limit.unwrap_or(5);
 
         let guard = self.state.lock().await;
-        let candidates = complete_pattern(
+        let mut candidates = complete_pattern(
             &guard.graph,
             guard.embedder.as_ref(),
             &args.cue,
             tolerance,
             limit,
         );
+
+        for candidate in &mut candidates {
+            let associated_contents: Vec<&str> = candidate
+                .associations
+                .iter()
+                .filter_map(|a| guard.graph.get_memory(&a.id).map(|m| m.content.as_str()))
+                .collect();
+            candidate.memory.content = guard
+                .slm
+                .complete_pattern_hint(&candidate.memory.content, &associated_contents);
+        }
 
         Ok(success_json(&CompletePatternResult { candidates }))
     }
@@ -1255,7 +1323,9 @@ async fn start_metrics_server(metrics_port: u16) {
         match listener.accept().await {
             Ok((stream, _)) => {
                 tokio::spawn(async move {
-                    let _ = handle_metrics(stream).await;
+                    if let Err(e) = handle_metrics(stream).await {
+                        tracing::warn!("Metrics connection handler error: {e}");
+                    }
                 });
             }
             Err(err) => {

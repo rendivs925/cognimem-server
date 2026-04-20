@@ -27,18 +27,27 @@ impl MemoryStore for InMemoryStore {
     fn save(&self, memory: &CognitiveMemoryUnit) -> Result<()> {
         self.memories
             .write()
-            .unwrap()
+            .expect("in-memory store write lock not poisoned")
             .insert(memory.id, memory.clone());
         Ok(())
     }
 
     fn delete(&self, id: &Uuid) -> Result<()> {
-        self.memories.write().unwrap().remove(id);
+        self.memories
+            .write()
+            .expect("in-memory store write lock not poisoned")
+            .remove(id);
         Ok(())
     }
 
     fn load_all(&self) -> Result<Vec<CognitiveMemoryUnit>> {
-        Ok(self.memories.read().unwrap().values().cloned().collect())
+        Ok(self
+            .memories
+            .read()
+            .expect("in-memory store read lock not poisoned")
+            .values()
+            .cloned()
+            .collect())
     }
 }
 

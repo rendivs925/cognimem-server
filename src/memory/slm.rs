@@ -1,6 +1,5 @@
 use super::types::ConflictResolution;
 
-#[allow(dead_code)]
 pub trait SlmEngine: Send {
     fn compress(&self, content: &str) -> String;
     fn rerank(&self, candidates: &[RerankCandidate], query: &str, top_n: usize) -> Vec<usize>;
@@ -9,7 +8,6 @@ pub trait SlmEngine: Send {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub struct RerankCandidate {
     pub id: uuid::Uuid,
     pub content: String,
