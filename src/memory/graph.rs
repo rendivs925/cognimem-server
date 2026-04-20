@@ -12,6 +12,7 @@ pub struct MemoryGraph {
     id_to_key: HashMap<Uuid, MemoryKey>,
     edges: HashMap<(Uuid, Uuid), f32>,
     by_tier: HashMap<MemoryTier, HashSet<Uuid>>,
+    embeddings: HashMap<Uuid, Vec<f32>>,
 }
 
 impl MemoryGraph {
@@ -21,6 +22,7 @@ impl MemoryGraph {
             id_to_key: HashMap::new(),
             edges: HashMap::new(),
             by_tier: HashMap::new(),
+            embeddings: HashMap::new(),
         }
     }
 
@@ -56,6 +58,7 @@ impl MemoryGraph {
         let memory = self.nodes.remove(key)?;
         self.by_tier.get_mut(&memory.tier).map(|s| s.remove(id));
         self.edges.retain(|(from, to), _| from != id && to != id);
+        self.embeddings.remove(id);
         Some(memory)
     }
 
@@ -144,6 +147,32 @@ impl MemoryGraph {
     pub fn change_tier(&mut self, id: &Uuid, old_tier: MemoryTier, new_tier: MemoryTier) {
         self.by_tier.entry(old_tier).or_default().remove(id);
         self.by_tier.entry(new_tier).or_default().insert(*id);
+    }
+
+    pub fn set_embedding(&mut self, id: Uuid, embedding: Vec<f32>) {
+        self.embeddings.insert(id, embedding);
+    }
+
+    pub fn vector_search(&self, query_embedding: &[f32], limit: usize, min_similarity: f32) -> Vec<(Uuid, f32)> {
+        let mut scores: Vec<(Uuid, f32)> = self
+            .embeddings
+            .iter()
+            .filter_map(|(id, emb)| {
+                if emb.len() != query_embedding.len() {
+                    return None;
+                }
+                let sim = crate::embeddings::cosine_similarity(query_embedding, emb);
+                if sim >= min_similarity {
+                    Some((*id, sim))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scores.truncate(limit);
+        scores
     }
 }
 

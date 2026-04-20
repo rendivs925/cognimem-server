@@ -1,4 +1,5 @@
 mod config;
+mod embeddings;
 mod memory;
 mod metrics;
 mod rate_limit;
@@ -13,6 +14,7 @@ use memory::{
     SearchArgs, SearchResult, SearchResults, TimelineArgs, TimelineResult,
 };
 use search::{Fts5Search, SearchEngine};
+use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
 use metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_remember, inc_reflect,
     set_memory_count,
@@ -39,6 +41,7 @@ struct CogniMemState {
     graph: memory::MemoryGraph,
     storage: Box<dyn MemoryStore>,
     search: Box<dyn SearchEngine + Send>,
+    embedder: Box<dyn EmbeddingEngine + Send>,
 }
 
 impl CogniMemState {
@@ -48,13 +51,16 @@ impl CogniMemState {
             Ok(fts) => Box::new(fts),
             Err(_) => Box::new(search::SubstringSearch),
         };
+        let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
         if let Ok(memories) = storage.load_all() {
             for m in &memories {
+                let emb = embedder.embed(&m.content);
                 graph.add_memory(m.clone());
+                graph.set_embedding(m.id, emb);
                 search.index(m.id, &m.content, m.tier);
             }
         }
-        Self { graph, storage, search }
+        Self { graph, storage, search, embedder }
     }
 }
 
@@ -376,6 +382,8 @@ impl CogniMemServer {
 
         guard.graph.add_memory(memory.clone());
         guard.search.index(memory_id, &memory.content, memory.tier);
+        let embedding = guard.embedder.embed(&memory.content);
+        guard.graph.set_embedding(memory_id, embedding);
         if let Err(e) = guard.storage.save(&memory) {
             error!("Failed to persist memory {memory_id}: {e}");
         }
@@ -409,22 +417,40 @@ impl CogniMemServer {
 
         let mut guard = self.state.lock().await;
 
+        let query_emb = guard.embedder.embed(&query);
+
         let fts_ids = guard.search.search(&query, args.tier, limit * 4);
-        let mut results: Vec<&CognitiveMemoryUnit> = if fts_ids.is_empty() {
-            match args.tier {
+        let vec_scores = guard.graph.vector_search(&query_emb, limit * 4, 0.1);
+
+        let fused = if fts_ids.is_empty() && vec_scores.is_empty() {
+            let mut fallback: Vec<&CognitiveMemoryUnit> = match args.tier {
                 Some(tier) => guard.graph.get_by_tier(tier),
                 None => guard.graph.get_all_memories(),
             }
             .into_iter()
             .filter(|m| search::matches_query(&m.content, &query) && m.metadata.base_activation >= min_activation)
-            .collect()
-        } else {
-            fts_ids
+            .collect();
+            fallback.sort_by(|a, b| {
+                b.metadata.base_activation.partial_cmp(&a.metadata.base_activation).unwrap()
+            });
+            fallback.truncate(limit);
+            let ids: Vec<uuid::Uuid> = fallback.iter().map(|m| m.id).collect();
+            update_activation_for(&mut guard, &ids, now);
+            let memories: Vec<MemorySummary> = ids
                 .iter()
-                .filter_map(|id| guard.graph.get_memory(id))
-                .filter(|m| m.metadata.base_activation >= min_activation)
-                .collect()
+                .filter_map(|id| guard.graph.get_memory(id).map(MemorySummary::from))
+                .collect();
+            inc_recall();
+            return Ok(success_json(&RecallResult::new(memories)));
+        } else {
+            fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6)
         };
+
+        let mut results: Vec<&CognitiveMemoryUnit> = fused
+            .iter()
+            .filter_map(|(id, _)| guard.graph.get_memory(id))
+            .filter(|m| m.metadata.base_activation >= min_activation)
+            .collect();
 
         let direct_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         expand_with_associations(&direct_ids, &mut results, &guard.graph);
@@ -556,8 +582,14 @@ error!("Failed to persist association for {}: {e}", args.from);
         let now = chrono::Utc::now().timestamp();
         let mut guard = self.state.lock().await;
 
+        let query_emb = guard.embedder.embed(&args.query);
+
         let fts_ids = guard.search.search(&args.query, args.tier, limit * 4);
-        let mut results: Vec<&CognitiveMemoryUnit> = if fts_ids.is_empty() {
+        let vec_scores = guard.graph.vector_search(&query_emb, limit * 4, 0.1);
+
+        let fused = fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6);
+
+        let mut results: Vec<&CognitiveMemoryUnit> = if fused.is_empty() {
             match args.tier {
                 Some(tier) => guard.graph.get_by_tier(tier),
                 None => guard.graph.get_all_memories(),
@@ -566,9 +598,9 @@ error!("Failed to persist association for {}: {e}", args.from);
             .filter(|m| search::matches_query(&m.content, &args.query.to_lowercase()))
             .collect()
         } else {
-            fts_ids
+            fused
                 .iter()
-                .filter_map(|id| guard.graph.get_memory(id))
+                .filter_map(|(id, _)| guard.graph.get_memory(id))
                 .collect()
         };
 
