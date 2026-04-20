@@ -8,13 +8,15 @@ mod search;
 use clap::Parser;
 use config::Cli;
 use memory::{
-    AssociateArgs, AssociateResult, CognitiveMemoryUnit, ForgetArgs, ForgetResult,
-    GetObservationsArgs, InMemoryStore, MemoryStore, MemorySummary, ObservationsResult, RecallArgs,
-    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore,
-    SearchArgs, SearchResult, SearchResults, TimelineArgs, TimelineResult,
+    AssociateArgs, AssociateResult, CognitiveMemoryUnit, ExecuteSkillArgs, ExecuteSkillResult,
+    ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore, MemoryStore, MemorySummary,
+    MemoryTier, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
+    RememberArgs, RememberResult, RocksDbStore, SearchArgs, SearchResult, SearchResults,
+    SkillMemory, TimelineArgs, TimelineResult,
 };
 use search::{Fts5Search, SearchEngine};
 use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
+use memory::{detect_and_create_skill, find_skill};
 use metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_remember, inc_reflect,
     set_memory_count,
@@ -228,6 +230,17 @@ impl ServerHandler for CogniMemServer {
                     "required": ["memory_id"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("execute_skill"),
+                Cow::Borrowed("Look up a procedural skill by name and return its distilled pattern and steps"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "skill_name": { "type": "string", "description": "Name of the skill to execute" }
+                    },
+                    "required": ["skill_name"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -261,6 +274,7 @@ impl ServerHandler for CogniMemServer {
             "search" => self.handle_search(args).await,
             "timeline" => self.handle_timeline(args).await,
             "get_observations" => self.handle_get_observations(args).await,
+            "execute_skill" => self.handle_execute_skill(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -387,6 +401,16 @@ impl CogniMemServer {
         guard.graph.set_embedding(memory_id, embedding);
         if let Err(e) = guard.storage.save(&memory) {
             error!("Failed to persist memory {memory_id}: {e}");
+        }
+
+        if !matches!(tier, MemoryTier::Procedural) {
+            let CogniMemState { graph, storage, search, embedder } = &mut *guard;
+            if let Some(skill_memory) = detect_and_create_skill(graph, embedder.as_ref(), &mut **search, &memory.content) {
+                if let Err(e) = storage.save(&skill_memory) {
+                    error!("Failed to persist skill memory {}: {e}", skill_memory.id);
+                }
+                set_memory_count(graph.len() as u64);
+            }
         }
 
         inc_remember();
@@ -698,6 +722,36 @@ error!("Failed to persist association for {}: {e}", args.from);
         })?;
 
         Ok(success_json(&ObservationsResult { memory: memory.clone() }))
+    }
+
+    async fn handle_execute_skill(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: ExecuteSkillArgs = parse_args(args)?;
+
+        if args.skill_name.is_empty() {
+            return Err(invalid_params("skill_name must not be empty"));
+        }
+
+        let guard = self.state.lock().await;
+        let memory = find_skill(&guard.graph, &args.skill_name).ok_or_else(|| {
+            invalid_params(&format!("Skill not found: {}", args.skill_name))
+        })?;
+
+        let skill: SkillMemory = memory
+            .content
+            .split_once('\n')
+            .and_then(|(_, json)| serde_json::from_str(json).ok())
+            .ok_or_else(|| invalid_params("Skill memory is malformed"))?;
+
+        Ok(success_json(&ExecuteSkillResult {
+            skill_id: memory.id,
+            skill_name: skill.name,
+            pattern: skill.pattern,
+            steps: skill.steps,
+            source_count: skill.source_ids.len(),
+        }))
     }
 }
 

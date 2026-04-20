@@ -342,3 +342,31 @@ pub struct GetObservationsArgs {
 pub struct ObservationsResult {
     pub memory: CognitiveMemoryUnit,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecuteSkillArgs {
+    pub skill_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecuteSkillResult {
+    pub skill_id: Uuid,
+    pub skill_name: String,
+    pub pattern: String,
+    pub steps: Vec<String>,
+    pub source_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillMemory {
+    pub name: String,
+    pub pattern: String,
+    pub steps: Vec<String>,
+    pub source_ids: Vec<Uuid>,
+}
+
+impl SkillMemory {
+    pub fn new(name: String, pattern: String, steps: Vec<String>, source_ids: Vec<Uuid>) -> Self {
+        Self { name, pattern, steps, source_ids }
+    }
+}
