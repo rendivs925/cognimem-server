@@ -2,15 +2,16 @@
 //!
 //! Tests the MCP tools, resources, and core functionality.
 
-use cognimem_server::embeddings::{cosine_similarity, fuse_scores, EmbeddingEngine, HashEmbedding};
+use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, cosine_similarity, fuse_scores};
+use cognimem_server::memory::CompletePatternArgs;
 use cognimem_server::memory::types::{
     AssignRoleArgs, AssociateArgs, ConflictResolution, ExecuteSkillArgs, ForgetArgs,
-    GetObservationsArgs, MemoryTier, PersonaDomain, RecallArgs, RememberArgs, SearchArgs, TimelineArgs,
+    GetObservationsArgs, MemoryTier, PersonaDomain, RecallArgs, RememberArgs, SearchArgs,
+    TimelineArgs,
 };
-use cognimem_server::memory::CompletePatternArgs;
 use cognimem_server::memory::{
-    CognitiveMemoryUnit, InMemoryStore, detect_and_create_skill, extract_persona, MemoryGraph,
-    MemoryStore,
+    CognitiveMemoryUnit, InMemoryStore, MemoryGraph, MemoryStore, detect_and_create_skill,
+    extract_persona,
 };
 use cognimem_server::search::{Fts5Search, SearchEngine};
 
@@ -144,7 +145,10 @@ fn test_assign_role_args_parsing() {
     assert_eq!(args.memory_id.to_string(), uuid);
     assert_eq!(args.responsible, Some("agent-1".to_string()));
     assert_eq!(args.accountable, Some("agent-2".to_string()));
-    assert_eq!(args.consulted, Some(vec!["agent-3".to_string(), "agent-4".to_string()]));
+    assert_eq!(
+        args.consulted,
+        Some(vec!["agent-3".to_string(), "agent-4".to_string()])
+    );
     assert_eq!(args.informed, Some(vec!["agent-5".to_string()]));
 }
 
@@ -237,7 +241,10 @@ fn test_embedding_similarity() {
     let sim_same = cosine_similarity(&v1, &v2);
     let sim_diff = cosine_similarity(&v1, &v3);
 
-    assert!(sim_same > sim_diff, "similar texts should have higher similarity");
+    assert!(
+        sim_same > sim_diff,
+        "similar texts should have higher similarity"
+    );
     assert!(sim_same > 0.5, "similar texts should have >0.5 similarity");
 }
 
@@ -269,12 +276,7 @@ fn test_skill_detection_api_exists() {
     let mut search = Fts5Search::new().expect("FTS5 init");
 
     // Check that detect_and_create_skill is callable
-    _ = detect_and_create_skill(
-        &mut graph,
-        &embedder,
-        &mut search,
-        "test query",
-    );
+    _ = detect_and_create_skill(&mut graph, &embedder, &mut search, "test query");
 }
 
 #[test]
@@ -327,7 +329,10 @@ fn test_graph_spreading_activation() {
     let results = graph.spreading_activation(&[id1], 3, 0.5, 0.1);
 
     let found_ids: Vec<_> = results.iter().map(|(id, _, _)| *id).collect();
-    assert!(found_ids.contains(&id2) || found_ids.contains(&id3), "should find at least one neighbor");
+    assert!(
+        found_ids.contains(&id2) || found_ids.contains(&id3),
+        "should find at least one neighbor"
+    );
 }
 
 #[test]

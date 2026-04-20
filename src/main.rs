@@ -7,9 +7,9 @@ use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
     CompletePatternArgs, CompletePatternResult, ExecuteSkillArgs, ExecuteSkillResult,
     ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
-    MemoryStore, MemorySummary, MemoryTier, NoOpSlm, ObservationsResult, RecallArgs, RecallResult,
-    ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore, SearchArgs,
-    SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs, TimelineResult,
+    MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs,
+    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore,
+    SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs, TimelineResult,
 };
 use cognimem_server::memory::{
     MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
@@ -50,7 +50,7 @@ struct CogniMemState {
 }
 
 impl CogniMemState {
-    fn new(storage: Box<dyn MemoryStore>) -> Self {
+    fn new(storage: Box<dyn MemoryStore>, ollama_model: Option<String>, ollama_url: Option<String>) -> Self {
         let mut graph = MemoryGraph::new();
         let mut search: Box<dyn SearchEngine + Send> = match Fts5Search::new() {
             Ok(fts) => Box::new(fts),
@@ -60,7 +60,19 @@ impl CogniMemState {
             }
         };
         let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
-        let slm: Box<dyn SlmEngine + Send> = Box::new(NoOpSlm);
+
+        let slm: Box<dyn SlmEngine + Send> = if let Some(model) = ollama_model {
+            let ollama = OllamaSlm::new(Some(model), ollama_url);
+            if ollama.check_available() {
+                tracing::info!("Ollama SLM engine initialized successfully");
+                Box::new(ollama)
+            } else {
+                tracing::warn!("Ollama not available, falling back to NoOpSlm");
+                Box::new(NoOpSlm)
+            }
+        } else {
+            Box::new(NoOpSlm)
+        };
         let memories = match storage.load_all() {
             Ok(m) => m,
             Err(e) => {
@@ -1143,7 +1155,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "memory" => Box::new(InMemoryStore::new()),
         _ => Box::new(RocksDbStore::open(Path::new(&cli.data_path))?),
     };
-    let state = Arc::new(Mutex::new(CogniMemState::new(storage)));
+    let state = Arc::new(Mutex::new(CogniMemState::new(storage, cli.ollama_model.clone(), cli.ollama_url.clone())));
     {
         let guard = state.lock().await;
         set_memory_count(guard.graph.len() as u64);

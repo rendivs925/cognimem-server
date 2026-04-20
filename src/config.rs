@@ -38,4 +38,18 @@ pub struct Cli {
 
     #[arg(long, hide = true, help = "Unix socket path for daemon/client bridge")]
     pub socket_path: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "qwen2.5-coder:3b",
+        help = "Ollama model to use for SLM operations (e.g., qwen2.5-coder:3b)"
+    )]
+    pub ollama_model: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "http://localhost:11434",
+        help = "Ollama base URL"
+    )]
+    pub ollama_url: Option<String>,
 }
