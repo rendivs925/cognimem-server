@@ -10,13 +10,14 @@ use config::Cli;
 use memory::{
     AssociateArgs, AssociateResult, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternResult,
     ExecuteSkillArgs, ExecuteSkillResult, ForgetArgs, ForgetResult, GetObservationsArgs,
-    InMemoryStore, MemoryStore, MemorySummary, MemoryTier, ObservationsResult,
-    RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
-    RocksDbStore, SearchArgs, SearchResult, SearchResults, SkillMemory, TimelineArgs, TimelineResult,
+    InMemoryStore, MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs,
+    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore,
+    SearchArgs, SearchResult, SearchResults, SkillMemory, TimelineArgs, TimelineResult,
+    AssignRoleArgs, AssignRoleResult, ExtractPersonaResult,
 };
 use search::{Fts5Search, SearchEngine};
 use embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
-use memory::{detect_and_create_skill, find_skill, strengthen_co_activated, complete_pattern};
+use memory::{detect_and_create_skill, find_skill, strengthen_co_activated, complete_pattern, extract_persona};
 use metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_remember, inc_reflect,
     set_memory_count,
@@ -254,6 +255,29 @@ impl ServerHandler for CogniMemServer {
                     "required": ["cue"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("extract_persona"),
+                Cow::Borrowed("Scan semantic memories and extract structured persona across 6 domains"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("assign_role"),
+                Cow::Borrowed("Assign RACI roles (responsible, accountable, consulted, informed) to a memory"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": { "type": "string", "format": "uuid" },
+                        "responsible": { "type": "string", "description": "Agent ID who does the work" },
+                        "accountable": { "type": "string", "description": "Agent ID who owns the outcome" },
+                        "consulted": { "type": "array", "items": { "type": "string" }, "description": "Agent IDs consulted before action" },
+                        "informed": { "type": "array", "items": { "type": "string" }, "description": "Agent IDs informed after action" }
+                    },
+                    "required": ["memory_id"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -289,6 +313,8 @@ impl ServerHandler for CogniMemServer {
             "get_observations" => self.handle_get_observations(args).await,
             "execute_skill" => self.handle_execute_skill(args).await,
             "complete_pattern" => self.handle_complete_pattern(args).await,
+            "extract_persona" => self.handle_extract_persona(args).await,
+            "assign_role" => self.handle_assign_role(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -786,6 +812,55 @@ error!("Failed to persist association for {}: {e}", args.from);
         let candidates = complete_pattern(&guard.graph, guard.embedder.as_ref(), &args.cue, tolerance, limit);
 
         Ok(success_json(&CompletePatternResult { candidates }))
+    }
+
+    async fn handle_extract_persona(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let _ = parse_args::<serde_json::Map<String, serde_json::Value>>(args)?;
+        let guard = self.state.lock().await;
+        let profiles = extract_persona(&guard.graph);
+        Ok(success_json(&ExtractPersonaResult { profiles }))
+    }
+
+    async fn handle_assign_role(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: AssignRoleArgs = parse_args(args)?;
+        let mut guard = self.state.lock().await;
+
+        let memory = guard.graph.get_memory_mut(&args.memory_id).ok_or_else(|| {
+            invalid_params(&format!("Memory not found: {}", args.memory_id))
+        })?;
+
+        if let Some(r) = &args.responsible {
+            memory.raci.responsible = Some(r.clone());
+        }
+        if let Some(a) = &args.accountable {
+            memory.raci.accountable = Some(a.clone());
+        }
+        if let Some(c) = &args.consulted {
+            memory.raci.consulted = c.clone();
+        }
+        if let Some(i) = &args.informed {
+            memory.raci.informed = i.clone();
+        }
+
+        let raci = memory.raci.clone();
+
+        if let Some(mem) = guard.graph.get_memory(&args.memory_id)
+            && let Err(e) = guard.storage.save(mem)
+        {
+            error!("Failed to persist RACI update for {}: {e}", args.memory_id);
+        }
+
+        Ok(success_json(&AssignRoleResult {
+            memory_id: args.memory_id,
+            raci,
+            message: "RACI roles updated successfully".to_string(),
+        }))
     }
 }
 

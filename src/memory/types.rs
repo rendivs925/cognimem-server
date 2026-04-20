@@ -37,6 +37,30 @@ impl MemoryTier {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Display, IntoStaticStr, EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum PersonaDomain {
+    Biography,
+    Experiences,
+    Preferences,
+    Social,
+    Work,
+    Psychometrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RaciRoles {
+    #[serde(default)]
+    pub responsible: Option<String>,
+    #[serde(default)]
+    pub accountable: Option<String>,
+    #[serde(default)]
+    pub consulted: Vec<String>,
+    #[serde(default)]
+    pub informed: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MemoryMetadata {
     pub created_at: i64,
@@ -81,6 +105,10 @@ pub struct CognitiveMemoryUnit {
     pub content: String,
     pub metadata: MemoryMetadata,
     pub associations: Vec<Uuid>,
+    #[serde(default)]
+    pub persona: Option<PersonaDomain>,
+    #[serde(default)]
+    pub raci: RaciRoles,
 }
 
 impl Default for CognitiveMemoryUnit {
@@ -97,6 +125,8 @@ impl CognitiveMemoryUnit {
             content,
             metadata: MemoryMetadata::new(importance, decay_rate),
             associations: Vec::new(),
+            persona: None,
+            raci: RaciRoles::default(),
         }
     }
 }
@@ -369,4 +399,37 @@ impl SkillMemory {
     pub fn new(name: String, pattern: String, steps: Vec<String>, source_ids: Vec<Uuid>) -> Self {
         Self { name, pattern, steps, source_ids }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssignRoleArgs {
+    pub memory_id: Uuid,
+    #[serde(default)]
+    pub responsible: Option<String>,
+    #[serde(default)]
+    pub accountable: Option<String>,
+    #[serde(default)]
+    pub consulted: Option<Vec<String>>,
+    #[serde(default)]
+    pub informed: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignRoleResult {
+    pub memory_id: Uuid,
+    pub raci: RaciRoles,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonaProfile {
+    pub domain: PersonaDomain,
+    pub summary: String,
+    pub source_ids: Vec<Uuid>,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractPersonaResult {
+    pub profiles: Vec<PersonaProfile>,
 }
