@@ -1,8 +1,8 @@
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding};
+use cognimem_server::memory::types::CognitiveMemoryUnit;
 use cognimem_server::memory::{MemoryGraph, MemoryTier};
 use cognimem_server::search::{Fts5Search, SearchEngine};
-use cognimem_server::memory::types::CognitiveMemoryUnit;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_recall_substring(c: &mut Criterion) {
     let mut group = c.benchmark_group("recall_substring");
@@ -55,7 +55,8 @@ fn bench_recall_hybrid(c: &mut Criterion) {
                 let fts_ids = search.search("rust programming", None, 20);
                 let query_emb = embedder.embed("rust programming");
                 let vec_scores = graph.vector_search(&query_emb, 20, 0.1);
-                let fused = cognimem_server::embeddings::fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6);
+                let fused =
+                    cognimem_server::embeddings::fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6);
                 black_box(fused);
             });
         });
@@ -91,5 +92,10 @@ fn bench_add_memory(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_recall_substring, bench_recall_hybrid, bench_add_memory);
+criterion_group!(
+    benches,
+    bench_recall_substring,
+    bench_recall_hybrid,
+    bench_add_memory
+);
 criterion_main!(benches);

@@ -1,7 +1,6 @@
 mod config;
 
 use clap::Parser;
-use config::Cli;
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
 use cognimem_server::memory::slm::RerankCandidate;
 use cognimem_server::memory::{
@@ -13,16 +12,17 @@ use cognimem_server::memory::{
     SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs, TimelineResult,
 };
 use cognimem_server::memory::{
-    complete_pattern, detect_and_create_skill, extract_persona, find_skill, strengthen_co_activated,
+    MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
+    prune_below_threshold, resolve_conflicts,
 };
 use cognimem_server::memory::{
-    apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
-    resolve_conflicts, MemoryGraph,
+    complete_pattern, detect_and_create_skill, extract_persona, find_skill, strengthen_co_activated,
 };
 use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
 };
 use cognimem_server::search::{Fts5Search, SearchEngine};
+use config::Cli;
 use rmcp::{
     ServerHandler, ServiceExt,
     model::{
@@ -826,7 +826,9 @@ impl CogniMemServer {
                 None => guard.graph.get_all_memories(),
             }
             .into_iter()
-            .filter(|m| cognimem_server::search::matches_query(&m.content, &args.query.to_lowercase()))
+            .filter(|m| {
+                cognimem_server::search::matches_query(&m.content, &args.query.to_lowercase())
+            })
             .collect()
         } else {
             fused
@@ -1340,8 +1342,8 @@ async fn handle_metrics(mut stream: tokio::net::TcpStream) -> std::io::Result<()
     let mut buf = [0u8; 1024];
     let _n = stream.read(&mut buf).await?;
 
-    let response =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_string() + &cognimem_server::metrics::encode();
+    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n".to_string()
+        + &cognimem_server::metrics::encode();
 
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
