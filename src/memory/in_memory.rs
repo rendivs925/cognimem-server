@@ -5,11 +5,15 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use uuid::Uuid;
 
+/// A thread-safe, in-memory store backed by a `RwLock<HashMap>`.
+///
+/// Suitable for testing and single-process usage. Data is lost on process exit.
 pub struct InMemoryStore {
     memories: RwLock<HashMap<Uuid, CognitiveMemoryUnit>>,
 }
 
 impl InMemoryStore {
+    /// Creates a new empty in-memory store.
     pub fn new() -> Self {
         Self {
             memories: RwLock::new(HashMap::new()),

@@ -3,17 +3,26 @@ use rusqlite::{Connection, params};
 use tracing::warn;
 use uuid::Uuid;
 
+/// A full-text search engine interface for indexing and querying memory content.
 pub trait SearchEngine {
+    /// Indexes a memory for search. Replaces any existing entry with the same ID.
     fn index(&mut self, id: Uuid, content: &str, tier: MemoryTier);
+    /// Removes a memory from the search index.
     fn remove(&mut self, id: &Uuid);
+    /// Searches indexed memories matching the query. Optionally filters by tier.
+    /// Returns up to `limit` matching memory IDs, ranked by relevance.
     fn search(&self, query: &str, tier: Option<MemoryTier>, limit: usize) -> Vec<Uuid>;
 }
 
+/// An FTS5-based search engine using an in-memory SQLite database.
+///
+/// Supports prefix-matching queries with optional tier filtering and rank ordering.
 pub struct Fts5Search {
     conn: Connection,
 }
 
 impl Fts5Search {
+    /// Creates a new FTS5 search engine with an in-memory SQLite database.
     pub fn new() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
@@ -92,6 +101,9 @@ impl SearchEngine for Fts5Search {
     }
 }
 
+/// A no-op search engine that indexes nothing and returns empty results.
+///
+/// Useful as a fallback when FTS5 is unavailable.
 pub struct SubstringSearch;
 
 impl SearchEngine for SubstringSearch {
@@ -104,6 +116,8 @@ impl SearchEngine for SubstringSearch {
     }
 }
 
+/// Returns `true` if `content` contains the query string (case-insensitive),
+/// or if any whitespace-delimited query word appears in the content.
 pub fn matches_query(content: &str, query: &str) -> bool {
     let lower = content.to_lowercase();
     lower.contains(query) || query.split_whitespace().any(|w| lower.contains(w))

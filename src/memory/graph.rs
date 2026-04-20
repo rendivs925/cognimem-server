@@ -4,9 +4,14 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 new_key_type! {
+    /// Internal slotmap key type for memory nodes.
     pub struct MemoryKey;
 }
 
+/// An in-memory graph structure storing memories, their associations, tier indices, and embeddings.
+///
+/// Supports O(1) lookup by UUID, tier-based filtering, spreading activation
+/// traversal, and vector similarity search.
 pub struct MemoryGraph {
     nodes: SlotMap<MemoryKey, CognitiveMemoryUnit>,
     id_to_key: HashMap<Uuid, MemoryKey>,
@@ -16,6 +21,7 @@ pub struct MemoryGraph {
 }
 
 impl MemoryGraph {
+    /// Creates a new empty memory graph.
     pub fn new() -> Self {
         Self {
             nodes: SlotMap::with_key(),
@@ -26,6 +32,10 @@ impl MemoryGraph {
         }
     }
 
+    /// Adds a memory to the graph, registering it in the tier index and
+    /// creating edges for any pre-existing associations listed on the unit.
+    ///
+    /// Returns the memory's UUID.
     pub fn add_memory(&mut self, memory: CognitiveMemoryUnit) -> Uuid {
         let id = memory.id;
         let tier = memory.tier;
@@ -43,16 +53,21 @@ impl MemoryGraph {
         id
     }
 
+    /// Returns a shared reference to the memory with the given ID, if it exists.
     pub fn get_memory(&self, id: &Uuid) -> Option<&CognitiveMemoryUnit> {
         let key = self.id_to_key.get(id)?;
         self.nodes.get(*key)
     }
 
+    /// Returns a mutable reference to the memory with the given ID, if it exists.
     pub fn get_memory_mut(&mut self, id: &Uuid) -> Option<&mut CognitiveMemoryUnit> {
         let key = self.id_to_key.get(id).copied()?;
         self.nodes.get_mut(key)
     }
 
+    /// Removes a memory from the graph, cleaning up all edges, embeddings, and tier indices.
+    ///
+    /// Returns the removed memory, or `None` if not found.
     pub fn remove_memory(&mut self, id: &Uuid) -> Option<CognitiveMemoryUnit> {
         let key = self.id_to_key.remove(id)?;
         let memory = self.nodes.remove(key)?;
@@ -62,6 +77,9 @@ impl MemoryGraph {
         Some(memory)
     }
 
+    /// Creates a directed association from `from` to `to` with the given strength (clamped to [0, 1]).
+    ///
+    /// Returns `true` if both memories exist and the association was created, `false` otherwise.
     pub fn add_association(&mut self, from: &Uuid, to: &Uuid, strength: f32) -> bool {
         if !self.contains(from) || !self.contains(to) {
             return false;
@@ -76,6 +94,7 @@ impl MemoryGraph {
         true
     }
 
+    /// Returns all outgoing associations from the given memory as (target_id, strength) pairs.
     pub fn get_associations(&self, id: &Uuid) -> Vec<(Uuid, f32)> {
         self.edges
             .iter()
@@ -84,6 +103,11 @@ impl MemoryGraph {
             .collect()
     }
 
+    /// Performs spreading activation from the given start IDs through the association graph.
+    ///
+    /// Returns `(memory_id, accumulated_strength, depth)` tuples for all reached nodes.
+    /// Activation decays by `decay_factor^(depth+1)` at each hop and stops below `min_strength`
+    /// or at `max_depth`. Visited nodes are not revisited (no cycles).
     pub fn spreading_activation(
         &self,
         start_ids: &[Uuid],
@@ -117,10 +141,12 @@ impl MemoryGraph {
         results
     }
 
+    /// Returns references to all memories in the graph.
     pub fn get_all_memories(&self) -> Vec<&CognitiveMemoryUnit> {
         self.nodes.iter().map(|(_, v)| v).collect()
     }
 
+    /// Returns references to all memories in the specified tier.
     pub fn get_by_tier(&self, tier: MemoryTier) -> Vec<&CognitiveMemoryUnit> {
         self.by_tier
             .get(&tier)
@@ -128,18 +154,24 @@ impl MemoryGraph {
             .unwrap_or_default()
     }
 
+    /// Returns `true` if a memory with the given ID exists in the graph.
     pub fn contains(&self, id: &Uuid) -> bool {
         self.id_to_key.contains_key(id)
     }
 
+    /// Returns the total number of memories in the graph.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Returns the number of memories in the specified tier.
     pub fn count_by_tier(&self, tier: MemoryTier) -> usize {
         self.by_tier.get(&tier).map(|s| s.len()).unwrap_or(0)
     }
 
+    /// Returns the ID of the memory with the lowest activation in the given tier.
+    ///
+    /// Returns `None` if the tier is empty.
     pub fn find_lowest_activation_in_tier(&self, tier: MemoryTier) -> Option<Uuid> {
         self.by_tier.get(&tier).and_then(|ids| {
             ids.iter()
@@ -152,28 +184,39 @@ impl MemoryGraph {
         })
     }
 
+    /// Moves a memory from one tier index to another. Does not modify the memory's `tier` field.
     pub fn change_tier(&mut self, id: &Uuid, old_tier: MemoryTier, new_tier: MemoryTier) {
         self.by_tier.entry(old_tier).or_default().remove(id);
         self.by_tier.entry(new_tier).or_default().insert(*id);
     }
 
+    /// Returns the strength of the association from `from` to `to`, if it exists.
     pub fn get_association_strength(&self, from: &Uuid, to: &Uuid) -> Option<f32> {
         self.edges.get(&(*from, *to)).copied()
     }
 
+    /// Updates the strength of the association from `from` to `to`, clamped to [0, 1].
+    ///
+    /// Creates the edge if it does not already exist.
     pub fn update_association(&mut self, from: &Uuid, to: &Uuid, strength: f32) {
         let clamped = strength.clamp(0.0, 1.0);
         self.edges.insert((*from, *to), clamped);
     }
 
+    /// Stores an embedding vector for the given memory.
     pub fn set_embedding(&mut self, id: Uuid, embedding: Vec<f32>) {
         self.embeddings.insert(id, embedding);
     }
 
+    /// Returns the embedding vector for the given memory, if it exists.
     pub fn get_embedding(&self, id: &Uuid) -> Option<&Vec<f32>> {
         self.embeddings.get(id)
     }
 
+    /// Searches memories by vector similarity against the query embedding.
+    ///
+    /// Returns up to `limit` results with cosine similarity >= `min_similarity`,
+    /// sorted by descending similarity.
     pub fn vector_search(
         &self,
         query_embedding: &[f32],

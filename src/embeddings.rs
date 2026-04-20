@@ -1,17 +1,25 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+/// Default dimensionality for embedding vectors.
 pub const EMBEDDING_DIM: usize = 256;
 
+/// An embedding engine that converts text into dense vector representations.
 pub trait EmbeddingEngine: Send {
+    /// Produces a normalized embedding vector for the given text.
     fn embed(&self, text: &str) -> Vec<f32>;
 }
 
+/// A deterministic, hash-based embedding engine for testing and lightweight use.
+///
+/// Generates `EMBEDDING_DIM`-dimensional vectors by hashing words and character n-grams
+/// into vector positions, then normalizing to unit length.
 pub struct HashEmbedding {
     dim: usize,
 }
 
 impl HashEmbedding {
+    /// Creates a new `HashEmbedding` with the default dimensionality.
     pub fn new() -> Self {
         Self { dim: EMBEDDING_DIM }
     }
@@ -75,6 +83,9 @@ fn normalize(vec: &mut [f32]) {
     }
 }
 
+/// Computes the cosine similarity between two vectors.
+///
+/// Returns 0.0 if vectors have different lengths, are empty, or have zero norm.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -88,6 +99,10 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
+/// Combines full-text search and vector similarity scores using a weighted fusion strategy.
+///
+/// FTS results contribute `fts_weight * (1 - rank/total)`, while vector results
+/// contribute `vec_weight * similarity`. Results are sorted by combined score descending.
 pub fn fuse_scores(
     fts_ids: &[uuid::Uuid],
     fts_weight: f32,

@@ -7,6 +7,12 @@ use tracing::error;
 const MIN_PATTERN_OCCURRENCES: usize = 3;
 const SKILL_SIMILARITY_THRESHOLD: f32 = 0.65;
 
+/// Detects a repeated pattern across similar memories and creates a Procedural skill memory.
+///
+/// Requires at least `MIN_PATTERN_OCCURRENCES - 1` similar memories (excluding the new content).
+/// If a skill with the same name already exists, returns `None`.
+///
+/// Returns the newly created Procedural memory unit, or `None` if conditions aren't met.
 pub fn detect_and_create_skill(
     graph: &mut MemoryGraph,
     embedder: &dyn EmbeddingEngine,
@@ -61,6 +67,9 @@ pub fn detect_and_create_skill(
     Some(memory)
 }
 
+/// Finds a skill memory by name, searching Procedural-tier memories for a `[skill]` prefix match.
+///
+/// Returns the matching memory, or `None` if not found.
 pub fn find_skill(graph: &MemoryGraph, name: &str) -> Option<CognitiveMemoryUnit> {
     let prefix = format!("[skill] {}", name.to_lowercase());
     graph

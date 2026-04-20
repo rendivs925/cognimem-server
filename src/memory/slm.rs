@@ -1,19 +1,34 @@
 use super::types::ConflictResolution;
 
+/// A small-language-model interface for advanced memory operations.
+///
+/// Implementations provide compression, reranking, conflict resolution,
+/// and pattern completion powered by an LLM.
 pub trait SlmEngine: Send {
+    /// Compresses the given content into a shorter representation.
     fn compress(&self, content: &str) -> String;
+    /// Reranks candidates by relevance to the query, returning indices of the top `top_n`.
     fn rerank(&self, candidates: &[RerankCandidate], query: &str, top_n: usize) -> Vec<usize>;
+    /// Decides how to resolve a conflict between two memory contents.
     fn resolve_conflict(&self, content_a: &str, content_b: &str) -> ConflictResolution;
+    /// Generates a completion hint for a partial pattern cue given surrounding context.
     fn complete_pattern_hint(&self, partial: &str, context: &[&str]) -> String;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A candidate for reranking, carrying an ID, content, and initial score.
 pub struct RerankCandidate {
     pub id: uuid::Uuid,
     pub content: String,
     pub score: f32,
 }
 
+/// A no-op SLM implementation that provides baseline behavior without an actual model.
+///
+/// - `compress`: truncates to the first 20 words.
+/// - `rerank`: sorts candidates by existing score in descending order.
+/// - `resolve_conflict`: always returns `LatestWins`.
+/// - `complete_pattern_hint`: returns the partial cue unchanged.
 pub struct NoOpSlm;
 
 impl SlmEngine for NoOpSlm {

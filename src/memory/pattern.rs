@@ -8,6 +8,10 @@ const HEBBIAN_WEAKEN: f32 = 0.01;
 const MIN_STRENGTH: f32 = 0.05;
 const MAX_STRENGTH: f32 = 1.0;
 
+/// Strengthens associations between co-activated memories (Hebbian learning).
+///
+/// For each pair in `ids`, the association strength is increased by 0.05 (max 1.0).
+/// If fewer than 2 IDs are provided, existing associations are weakened instead.
 pub fn strengthen_co_activated(graph: &mut MemoryGraph, ids: &[Uuid]) {
     if ids.len() < 2 {
         weaken_lone(graph, ids);
@@ -35,6 +39,10 @@ fn weaken_lone(graph: &mut MemoryGraph, ids: &[Uuid]) {
     }
 }
 
+/// Completes a partial pattern cue by finding memories with similar embeddings.
+///
+/// Returns up to `limit` candidates whose cosine similarity to the cue exceeds `tolerance`,
+/// each with their strongly-associated memories (strength >= 0.3).
 pub fn complete_pattern(
     graph: &MemoryGraph,
     embedder: &dyn EmbeddingEngine,
@@ -90,6 +98,8 @@ pub fn complete_pattern(
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A candidate returned by pattern completion, containing the matched memory,
+/// its similarity score, and associated memories.
 pub struct PatternCandidate {
     pub memory: MemorySummary,
     pub similarity: f32,
@@ -97,6 +107,7 @@ pub struct PatternCandidate {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+/// Arguments for the `complete_pattern` operation.
 pub struct CompletePatternArgs {
     pub cue: String,
     #[serde(default)]
@@ -106,6 +117,7 @@ pub struct CompletePatternArgs {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Result of a `complete_pattern` operation.
 pub struct CompletePatternResult {
     pub candidates: Vec<PatternCandidate>,
 }

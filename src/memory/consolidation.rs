@@ -8,6 +8,10 @@ const ASSOCIATED_BOOST: f32 = 0.02;
 const CONFLICT_SIMILARITY_THRESHOLD: f32 = 0.75;
 const RECENT_WINDOW_SECS: i64 = 3600;
 
+/// Runs a full consolidation cycle: replays recent memories to boost their activation,
+/// then detects conflicts among similar embeddings.
+///
+/// Returns the list of detected conflicts.
 pub fn consolidate(graph: &mut MemoryGraph, embedder: &dyn EmbeddingEngine) -> Vec<Conflict> {
     replay_recent(graph);
     detect_conflicts_from_embeddings(graph, compute_all_embeddings(graph, embedder))
@@ -61,6 +65,9 @@ fn compute_all_embeddings(
         .collect()
 }
 
+/// Detects conflicts between memories with high cosine similarity (0.75–0.98) in the same tier.
+///
+/// Returns all detected conflicts. Does not modify the graph.
 pub fn detect_conflicts(graph: &MemoryGraph, embedder: &dyn EmbeddingEngine) -> Vec<Conflict> {
     detect_conflicts_from_embeddings(graph, compute_all_embeddings(graph, embedder))
 }
@@ -106,6 +113,13 @@ fn detect_conflicts_from_embeddings(
     conflicts
 }
 
+/// Resolves the given conflicts using the specified strategy.
+///
+/// - `LatestWins`: removes the older memory in each conflict pair.
+/// - `KeepBoth`: keeps both memories (no changes).
+/// - `HumanDecide`: boosts importance of both memories by 0.1 and defers.
+///
+/// Returns the IDs of removed memories (empty for `KeepBoth` and `HumanDecide`).
 pub fn resolve_conflicts(
     graph: &mut MemoryGraph,
     conflicts: &[Conflict],

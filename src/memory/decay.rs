@@ -2,6 +2,10 @@ use super::graph::MemoryGraph;
 use super::types::MemoryTier;
 use chrono::Utc;
 
+/// Applies activation decay to all memories in the graph based on elapsed time.
+///
+/// Each memory's `base_activation` is recomputed using its decay rate and
+/// the time since it was last accessed.
 pub fn apply_decay_to_all(graph: &mut MemoryGraph) {
     let now = Utc::now().timestamp();
     let ids: Vec<uuid::Uuid> = graph.get_all_memories().iter().map(|m| m.id).collect();
@@ -13,6 +17,12 @@ pub fn apply_decay_to_all(graph: &mut MemoryGraph) {
     }
 }
 
+/// Removes all memories whose activation is below `threshold`.
+///
+/// Only Sensory, Working, and Episodic memories are eligible for pruning.
+/// Semantic and Procedural memories are preserved regardless of activation.
+///
+/// Returns the IDs of removed memories.
 pub fn prune_below_threshold(graph: &mut MemoryGraph, threshold: f32) -> Vec<uuid::Uuid> {
     let to_remove: Vec<uuid::Uuid> = graph
         .get_all_memories()
@@ -37,6 +47,13 @@ fn is_prunable(tier: MemoryTier, activation: f32, threshold: f32) -> bool {
     )
 }
 
+/// Promotes high-activation memories to more durable tiers.
+///
+/// Episodic memories with activation > 0.8 are promoted to Semantic.
+/// Semantic memories with activation > 0.9 are promoted to Procedural.
+/// Decay rates are updated to match the new tier.
+///
+/// Returns the number of promoted memories.
 pub fn promote_memories(graph: &mut MemoryGraph) -> usize {
     let promotions: Vec<(uuid::Uuid, MemoryTier, MemoryTier)> = graph
         .get_all_memories()

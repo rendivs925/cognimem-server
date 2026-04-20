@@ -90,6 +90,10 @@ const PERSONA_KEYWORDS: &[(PersonaDomain, &[&str])] = &[
     ),
 ];
 
+/// Extracts persona profiles from all memories in the graph by matching keyword patterns.
+///
+/// Each memory is classified into one or more domains based on keyword hits.
+/// Returns a `PersonaProfile` per detected domain with source IDs and a confidence score.
 pub fn extract_persona(graph: &MemoryGraph) -> Vec<PersonaProfile> {
     let mut profiles: std::collections::HashMap<PersonaDomain, (Vec<uuid::Uuid>, f32)> =
         std::collections::HashMap::new();

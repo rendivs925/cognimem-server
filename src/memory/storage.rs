@@ -6,11 +6,15 @@ use std::path::Path;
 use tracing::warn;
 use uuid::Uuid;
 
+/// A RocksDB-backed persistent store for cognitive memory units.
+///
+/// Each memory is serialized as JSON and stored with its UUID as the key.
 pub struct RocksDbStore {
     db: DB,
 }
 
 impl RocksDbStore {
+    /// Opens a RocksDB database at the given path, creating it if necessary.
     pub fn open(path: &Path) -> Result<Self> {
         let db = DB::open_default(path)?;
         Ok(Self { db })
