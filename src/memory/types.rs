@@ -249,3 +249,54 @@ impl ReflectResult {
         Self { pruned_count, promoted_count, decayed_count }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchArgs {
+    pub query: String,
+    pub tier: Option<MemoryTier>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub id: Uuid,
+    pub snippet: String,
+    pub tier: MemoryTier,
+    pub activation: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResults {
+    pub results: Vec<SearchResult>,
+}
+
+impl SearchResults {
+    pub fn new(results: Vec<SearchResult>) -> Self {
+        Self { results }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineArgs {
+    pub memory_id: Uuid,
+    #[serde(default)]
+    pub window_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineResult {
+    pub center: MemorySummary,
+    pub before: Vec<MemorySummary>,
+    pub after: Vec<MemorySummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GetObservationsArgs {
+    pub memory_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservationsResult {
+    pub memory: CognitiveMemoryUnit,
+}

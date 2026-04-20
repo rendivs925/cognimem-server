@@ -2,14 +2,17 @@ mod config;
 mod memory;
 mod metrics;
 mod rate_limit;
+mod search;
 
 use clap::Parser;
 use config::Cli;
 use memory::{
-    AssociateArgs, AssociateResult, CognitiveMemoryUnit, ForgetArgs, ForgetResult, InMemoryStore,
-    MemoryStore, MemorySummary, RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs,
-    RememberResult, RocksDbStore,
+    AssociateArgs, AssociateResult, CognitiveMemoryUnit, ForgetArgs, ForgetResult,
+    GetObservationsArgs, InMemoryStore, MemoryStore, MemorySummary, ObservationsResult, RecallArgs,
+    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore,
+    SearchArgs, SearchResult, SearchResults, TimelineArgs, TimelineResult,
 };
+use search::{Fts5Search, SearchEngine};
 use metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_remember, inc_reflect,
     set_memory_count,
@@ -35,17 +38,23 @@ use tracing::error;
 struct CogniMemState {
     graph: memory::MemoryGraph,
     storage: Box<dyn MemoryStore>,
+    search: Box<dyn SearchEngine + Send>,
 }
 
 impl CogniMemState {
     fn new(storage: Box<dyn MemoryStore>) -> Self {
         let mut graph = memory::MemoryGraph::new();
+        let mut search: Box<dyn SearchEngine + Send> = match Fts5Search::new() {
+            Ok(fts) => Box::new(fts),
+            Err(_) => Box::new(search::SubstringSearch),
+        };
         if let Ok(memories) = storage.load_all() {
-            for m in memories {
-                graph.add_memory(m);
+            for m in &memories {
+                graph.add_memory(m.clone());
+                search.index(m.id, &m.content, m.tier);
             }
         }
-        Self { graph, storage }
+        Self { graph, storage, search }
     }
 }
 
@@ -176,6 +185,42 @@ impl ServerHandler for CogniMemServer {
                     }
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("search"),
+                Cow::Borrowed("Search memories returning compact summaries (id, snippet, tier, activation)"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "tier": { "type": "string", "enum": TIER_ENUM },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    },
+                    "required": ["query"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("timeline"),
+                Cow::Borrowed("Get memories within a time window around a specific memory"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": { "type": "string", "format": "uuid" },
+                        "window_secs": { "type": "integer", "description": "Time window in seconds around the memory (default 900 = 15 min)" }
+                    },
+                    "required": ["memory_id"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("get_observations"),
+                Cow::Borrowed("Get the full content and metadata of a specific memory"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["memory_id"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -206,6 +251,9 @@ impl ServerHandler for CogniMemServer {
             "associate" => self.handle_associate(args).await,
             "forget" => self.handle_forget(args).await,
             "reflect" => self.handle_reflect(args).await,
+            "search" => self.handle_search(args).await,
+            "timeline" => self.handle_timeline(args).await,
+            "get_observations" => self.handle_get_observations(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -314,10 +362,11 @@ impl CogniMemServer {
         if let Some(limit) = tier.capacity() {
             while guard.graph.count_by_tier(tier) >= limit {
                 if let Some(evict_id) = guard.graph.find_lowest_activation_in_tier(tier) {
-                    if let Some(evicted) = guard.graph.remove_memory(&evict_id)
-                        && let Err(e) = guard.storage.delete(&evicted.id)
-                    {
-                        error!("Failed to delete evicted memory {}: {e}", evicted.id);
+                    if let Some(evicted) = guard.graph.remove_memory(&evict_id) {
+                        guard.search.remove(&evicted.id);
+                        if let Err(e) = guard.storage.delete(&evicted.id) {
+                            error!("Failed to delete evicted memory {}: {e}", evicted.id);
+                        }
                     }
                 } else {
                     break;
@@ -326,6 +375,7 @@ impl CogniMemServer {
         }
 
         guard.graph.add_memory(memory.clone());
+        guard.search.index(memory_id, &memory.content, memory.tier);
         if let Err(e) = guard.storage.save(&memory) {
             error!("Failed to persist memory {memory_id}: {e}");
         }
@@ -359,13 +409,22 @@ impl CogniMemServer {
 
         let mut guard = self.state.lock().await;
 
-        let mut results: Vec<&CognitiveMemoryUnit> = match args.tier {
-            Some(tier) => guard.graph.get_by_tier(tier),
-            None => guard.graph.get_all_memories(),
-        }
-        .into_iter()
-        .filter(|m| matches_query(&m.content, &query) && m.metadata.base_activation >= min_activation)
-        .collect();
+        let fts_ids = guard.search.search(&query, args.tier, limit * 4);
+        let mut results: Vec<&CognitiveMemoryUnit> = if fts_ids.is_empty() {
+            match args.tier {
+                Some(tier) => guard.graph.get_by_tier(tier),
+                None => guard.graph.get_all_memories(),
+            }
+            .into_iter()
+            .filter(|m| search::matches_query(&m.content, &query) && m.metadata.base_activation >= min_activation)
+            .collect()
+        } else {
+            fts_ids
+                .iter()
+                .filter_map(|id| guard.graph.get_memory(id))
+                .filter(|m| m.metadata.base_activation >= min_activation)
+                .collect()
+        };
 
         let direct_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         expand_with_associations(&direct_ids, &mut results, &guard.graph);
@@ -378,7 +437,7 @@ impl CogniMemServer {
         let recalled_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         update_activation_for(&mut guard, &recalled_ids, now);
 
-let memories: Vec<MemorySummary> = recalled_ids
+        let memories: Vec<MemorySummary> = recalled_ids
             .iter()
             .filter_map(|id| guard.graph.get_memory(id).map(MemorySummary::from))
             .collect();
@@ -425,10 +484,11 @@ error!("Failed to persist association for {}: {e}", args.from);
         inc_forget();
 
         if args.hard_delete.unwrap_or(false) {
-            if let Some(removed) = guard.graph.remove_memory(&args.memory_id)
-                && let Err(e) = guard.storage.delete(&removed.id)
-            {
-                error!("Failed to delete memory {}: {e}", removed.id);
+            if let Some(removed) = guard.graph.remove_memory(&args.memory_id) {
+                guard.search.remove(&removed.id);
+                if let Err(e) = guard.storage.delete(&removed.id) {
+                    error!("Failed to delete memory {}: {e}", removed.id);
+                }
             }
             set_memory_count(guard.graph.len() as u64);
             Ok(success_json(&ForgetResult::hard_deleted(args.memory_id)))
@@ -457,11 +517,15 @@ error!("Failed to persist association for {}: {e}", args.from);
 
         memory::apply_decay_to_all(&mut guard.graph);
 
-        let pruned = if intensity == "full" {
+        let pruned_ids = if intensity == "full" {
             memory::prune_below_threshold(&mut guard.graph, 0.01)
         } else {
-            0
+            Vec::new()
         };
+
+        for id in &pruned_ids {
+            guard.search.remove(id);
+        }
 
         let promoted = memory::promote_memories(&mut guard.graph);
 
@@ -472,16 +536,106 @@ error!("Failed to persist association for {}: {e}", args.from);
         }
 
         inc_reflect();
-        inc_prune(pruned as u64);
+        inc_prune(pruned_ids.len() as u64);
         set_memory_count(guard.graph.len() as u64);
 
-        Ok(success_json(&ReflectResult::new(pruned, promoted, total)))
+        Ok(success_json(&ReflectResult::new(pruned_ids.len(), promoted, total)))
     }
-}
 
-fn matches_query(content: &str, query: &str) -> bool {
-    let lower = content.to_lowercase();
-    lower.contains(query) || query.split_whitespace().any(|w| lower.contains(w))
+    async fn handle_search(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: SearchArgs = parse_args(args)?;
+
+        if args.query.is_empty() {
+            return Err(invalid_params("query must not be empty"));
+        }
+
+        let limit = args.limit.unwrap_or(10);
+        let now = chrono::Utc::now().timestamp();
+        let mut guard = self.state.lock().await;
+
+        let fts_ids = guard.search.search(&args.query, args.tier, limit * 4);
+        let mut results: Vec<&CognitiveMemoryUnit> = if fts_ids.is_empty() {
+            match args.tier {
+                Some(tier) => guard.graph.get_by_tier(tier),
+                None => guard.graph.get_all_memories(),
+            }
+            .into_iter()
+            .filter(|m| search::matches_query(&m.content, &args.query.to_lowercase()))
+            .collect()
+        } else {
+            fts_ids
+                .iter()
+                .filter_map(|id| guard.graph.get_memory(id))
+                .collect()
+        };
+
+        results.sort_by(|a, b| {
+            b.metadata.base_activation.partial_cmp(&a.metadata.base_activation).unwrap()
+        });
+        results.truncate(limit);
+
+        let search_results: Vec<SearchResult> = results.iter().map(|m| SearchResult {
+            id: m.id,
+            snippet: m.content.chars().take(80).collect(),
+            tier: m.tier,
+            activation: m.metadata.base_activation,
+        }).collect();
+
+        let ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
+        update_activation_for(&mut guard, &ids, now);
+
+        inc_recall();
+        Ok(success_json(&SearchResults::new(search_results)))
+    }
+
+    async fn handle_timeline(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: TimelineArgs = parse_args(args)?;
+        let window_secs = args.window_secs.unwrap_or(900);
+
+        let guard = self.state.lock().await;
+        let memory = guard.graph.get_memory(&args.memory_id).ok_or_else(|| {
+            invalid_params(&format!("Memory not found: {}", args.memory_id))
+        })?;
+
+        let center_time = memory.metadata.last_accessed;
+        let center = MemorySummary::from(memory);
+        let lower = center_time - window_secs;
+        let upper = center_time + window_secs;
+
+        let before: Vec<MemorySummary> = guard.graph.get_all_memories()
+            .iter()
+            .filter(|m| m.id != args.memory_id && m.metadata.last_accessed >= lower && m.metadata.last_accessed <= center_time)
+            .map(|m| MemorySummary::from(*m))
+            .collect();
+
+        let after: Vec<MemorySummary> = guard.graph.get_all_memories()
+            .iter()
+            .filter(|m| m.id != args.memory_id && m.metadata.last_accessed > center_time && m.metadata.last_accessed <= upper)
+            .map(|m| MemorySummary::from(*m))
+            .collect();
+
+        Ok(success_json(&TimelineResult { center, before, after }))
+    }
+
+    async fn handle_get_observations(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: GetObservationsArgs = parse_args(args)?;
+
+        let guard = self.state.lock().await;
+        let memory = guard.graph.get_memory(&args.memory_id).ok_or_else(|| {
+            invalid_params(&format!("Memory not found: {}", args.memory_id))
+        })?;
+
+        Ok(success_json(&ObservationsResult { memory: memory.clone() }))
+    }
 }
 
 fn expand_with_associations<'a>(direct_ids: &[uuid::Uuid], results: &mut Vec<&'a CognitiveMemoryUnit>, graph: &'a memory::MemoryGraph) {
@@ -516,9 +670,12 @@ async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_
         ticker.tick().await;
         let mut guard = state.lock().await;
         memory::apply_decay_to_all(&mut guard.graph);
-        let removed = memory::prune_below_threshold(&mut guard.graph, prune_threshold);
-        if removed > 0 {
-            tracing::info!("Pruned {removed} memories below activation threshold");
+        let pruned = memory::prune_below_threshold(&mut guard.graph, prune_threshold);
+        if !pruned.is_empty() {
+            for id in &pruned {
+                guard.search.remove(id);
+            }
+            tracing::info!("Pruned {} memories below activation threshold", pruned.len());
         }
     }
 }

@@ -13,7 +13,7 @@ pub fn apply_decay_to_all(graph: &mut MemoryGraph) {
     }
 }
 
-pub fn prune_below_threshold(graph: &mut MemoryGraph, threshold: f32) -> usize {
+pub fn prune_below_threshold(graph: &mut MemoryGraph, threshold: f32) -> Vec<uuid::Uuid> {
     let to_remove: Vec<uuid::Uuid> = graph
         .get_all_memories()
         .into_iter()
@@ -21,11 +21,10 @@ pub fn prune_below_threshold(graph: &mut MemoryGraph, threshold: f32) -> usize {
         .map(|m| m.id)
         .collect();
 
-    let count = to_remove.len();
     for id in &to_remove {
         graph.remove_memory(id);
     }
-    count
+    to_remove
 }
 
 fn is_prunable(tier: MemoryTier, activation: f32, threshold: f32) -> bool {
@@ -74,7 +73,7 @@ mod tests {
         let id = graph.add_memory(make_memory(MemoryTier::Sensory, 0.005));
         assert!(graph.get_memory(&id).is_some());
         let removed = prune_below_threshold(&mut graph, 0.01);
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
         assert!(graph.get_memory(&id).is_none());
     }
 
@@ -83,7 +82,7 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let id = graph.add_memory(make_memory(MemoryTier::Semantic, 0.005));
         let removed = prune_below_threshold(&mut graph, 0.01);
-        assert_eq!(removed, 0);
+        assert!(removed.is_empty());
         assert!(graph.get_memory(&id).is_some());
     }
 
@@ -92,7 +91,7 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let id = graph.add_memory(make_memory(MemoryTier::Episodic, 0.5));
         let removed = prune_below_threshold(&mut graph, 0.01);
-        assert_eq!(removed, 0);
+        assert!(removed.is_empty());
         assert!(graph.get_memory(&id).is_some());
     }
 
