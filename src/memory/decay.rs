@@ -36,18 +36,19 @@ fn is_prunable(tier: MemoryTier, activation: f32, threshold: f32) -> bool {
 }
 
 pub fn promote_memories(graph: &mut MemoryGraph) -> usize {
-    let promotions: Vec<(uuid::Uuid, MemoryTier)> = graph
+    let promotions: Vec<(uuid::Uuid, MemoryTier, MemoryTier)> = graph
         .get_all_memories()
         .iter()
         .filter_map(|m| match m.tier {
-            MemoryTier::Episodic if m.metadata.base_activation > 0.8 => Some((m.id, MemoryTier::Semantic)),
-            MemoryTier::Semantic if m.metadata.base_activation > 0.9 => Some((m.id, MemoryTier::Procedural)),
+            MemoryTier::Episodic if m.metadata.base_activation > 0.8 => Some((m.id, m.tier, MemoryTier::Semantic)),
+            MemoryTier::Semantic if m.metadata.base_activation > 0.9 => Some((m.id, m.tier, MemoryTier::Procedural)),
             _ => None,
         })
         .collect();
 
     let count = promotions.len();
-    for (id, new_tier) in &promotions {
+    for (id, old_tier, new_tier) in &promotions {
+        graph.change_tier(id, *old_tier, *new_tier);
         if let Some(mem) = graph.get_memory_mut(id) {
             mem.tier = *new_tier;
             mem.metadata.decay_rate = new_tier.decay_rate();
@@ -107,5 +108,21 @@ mod tests {
         // Activation should have decreased from 1.0
         let mem = graph.get_memory(&id).unwrap();
         assert!(mem.metadata.base_activation < 1.0);
+    }
+
+    #[test]
+    fn test_promote_updates_tier_index() {
+        let mut graph = MemoryGraph::new();
+        let id = graph.add_memory(make_memory(MemoryTier::Episodic, 0.9));
+        assert_eq!(graph.count_by_tier(MemoryTier::Episodic), 1);
+        assert_eq!(graph.count_by_tier(MemoryTier::Semantic), 0);
+
+        let promoted = promote_memories(&mut graph);
+        assert_eq!(promoted, 1);
+        assert_eq!(graph.count_by_tier(MemoryTier::Episodic), 0);
+        assert_eq!(graph.count_by_tier(MemoryTier::Semantic), 1);
+
+        let mem = graph.get_memory(&id).unwrap();
+        assert_eq!(mem.tier, MemoryTier::Semantic);
     }
 }

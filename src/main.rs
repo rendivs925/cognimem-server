@@ -1,6 +1,7 @@
 mod config;
 mod memory;
 mod metrics;
+mod rate_limit;
 
 use clap::Parser;
 use config::Cli;
@@ -51,11 +52,15 @@ impl CogniMemState {
 #[derive(Clone)]
 struct CogniMemServer {
     state: Arc<Mutex<CogniMemState>>,
+    rate_limiter: Arc<rate_limit::RateLimiter>,
 }
 
 impl CogniMemServer {
     fn new(state: Arc<Mutex<CogniMemState>>) -> Self {
-        Self { state }
+        Self {
+            state,
+            rate_limiter: Arc::new(rate_limit::RateLimiter::new(100, 60)),
+        }
     }
 }
 
@@ -81,6 +86,9 @@ fn invalid_params(msg: &str) -> rmcp::ErrorData {
 fn tool_not_found() -> rmcp::ErrorData {
     rmcp::ErrorData::new(rmcp::model::ErrorCode(-32601), Cow::Owned("Unknown tool".to_string()), None)
 }
+
+const MAX_CONTENT_LEN: usize = 10_000;
+const MAX_ASSOCIATIONS: usize = 50;
 
 fn json_schema(json: serde_json::Value) -> std::sync::Arc<serde_json::Map<String, serde_json::Value>> {
     std::sync::Arc::new(json.as_object().cloned().unwrap())
@@ -183,6 +191,13 @@ impl ServerHandler for CogniMemServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let _ = context;
+        if !self.rate_limiter.allow() {
+            return Err(rmcp::ErrorData::new(
+                rmcp::model::ErrorCode(-32000),
+                Cow::Borrowed("Rate limit exceeded: max 100 requests per minute"),
+                None,
+            ));
+        }
         let args = request.arguments.unwrap_or_default();
 
         match request.name.as_ref() {
@@ -270,6 +285,20 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args: RememberArgs = parse_args(args)?;
 
+        if args.content.len() > MAX_CONTENT_LEN {
+            return Err(invalid_params(&format!(
+                "content exceeds maximum length of {MAX_CONTENT_LEN} bytes"
+            )));
+        }
+
+        if let Some(ref assoc_ids) = args.associations
+            && assoc_ids.len() > MAX_ASSOCIATIONS
+        {
+            return Err(invalid_params(&format!(
+                "associations exceed maximum count of {MAX_ASSOCIATIONS}"
+            )));
+        }
+
         let tier = args.tier.unwrap_or_default();
         let importance = args.importance.unwrap_or(0.5);
         let decay_rate = tier.decay_rate();
@@ -312,6 +341,16 @@ impl CogniMemServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args: RecallArgs = parse_args(args)?;
+
+        if args.query.is_empty() {
+            return Err(invalid_params("query must not be empty"));
+        }
+
+        if let Some(limit) = args.limit
+            && limit == 0
+        {
+            return Err(invalid_params("limit must be at least 1"));
+        }
 
         let query = args.query.to_lowercase();
         let limit = args.limit.unwrap_or(5);

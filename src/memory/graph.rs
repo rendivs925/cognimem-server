@@ -140,6 +140,11 @@ impl MemoryGraph {
                     .map(|(id, _)| id)
             })
     }
+
+    pub fn change_tier(&mut self, id: &Uuid, old_tier: MemoryTier, new_tier: MemoryTier) {
+        self.by_tier.entry(old_tier).or_default().remove(id);
+        self.by_tier.entry(new_tier).or_default().insert(*id);
+    }
 }
 
 impl Default for MemoryGraph {
