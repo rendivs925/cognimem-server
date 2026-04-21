@@ -149,14 +149,40 @@ impl OllamaSlm {
     ) -> Result<T, SlmError> {
         let response = response?;
         let cleaned = Self::extract_json(&response);
-        serde_json::from_str(&cleaned).map_err(|e| {
+        let normalized = Self::normalize_array_fields(&cleaned);
+        serde_json::from_str(&normalized).map_err(|e| {
             tracing::warn!(
-                "Ollama JSON parse failed: {}. Raw (first 200): {:?}",
+                "Ollama JSON parse failed: {}. Raw (first 300): {:?}",
                 e,
-                &response[..response.len().min(200)]
+                &response[..response.len().min(300)]
             );
             SlmError::InvalidResponse(e.to_string())
         })
+    }
+
+    fn normalize_array_fields(json_str: &str) -> String {
+        let mut val: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return json_str.to_string(),
+        };
+        if let serde_json::Value::Object(ref mut map) = val {
+            let array_fields = ["ranked_ids", "tags", "steps", "evidence", "source_ids",
+                "associations", "practices", "applies_to", "key_decisions", "key_actions",
+                "completed", "unresolved", "next_steps", "consulted", "informed"];
+            for field in array_fields {
+                if let Some(serde_json::Value::Object(obj)) = map.get(field) {
+                    let mut items: Vec<serde_json::Value> = obj
+                        .keys()
+                        .filter_map(|k| k.parse::<usize>().ok())
+                        .filter_map(|i| obj.get(&i.to_string()).cloned())
+                        .collect();
+                    if !items.is_empty() {
+                        map.insert(field.to_string(), serde_json::Value::Array(items));
+                    }
+                }
+            }
+        }
+        serde_json::to_string(&val).unwrap_or_else(|_| json_str.to_string())
     }
 
     fn clamp_confidence(confidence: f32) -> f32 {

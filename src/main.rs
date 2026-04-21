@@ -63,13 +63,44 @@ impl CogniMemServer {
 fn parse_args<T: serde::de::DeserializeOwned>(
     args: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, rmcp::ErrorData> {
-    serde_json::from_value(serde_json::Value::Object(args)).map_err(|e| {
+    let coerced = coerce_arg_types(args);
+    serde_json::from_value(serde_json::Value::Object(coerced)).map_err(|e| {
+        let msg = e.to_string();
+        let hint = if msg.contains("invalid type: string") && msg.contains("expected") {
+            let suggestion = if msg.contains("f32") || msg.contains("f64") {
+                " — pass a number, not a string (e.g. 0.0 not \"0.0\")"
+            } else if msg.contains("integer") || msg.contains("u64") || msg.contains("usize") {
+                " — pass an integer, not a string (e.g. 5 not \"5\")"
+            } else {
+                " — check the parameter type in the tool schema"
+            };
+            format!("{msg}{suggestion}")
+        } else {
+            msg
+        };
         rmcp::ErrorData::new(
             rmcp::model::ErrorCode(-32602),
-            Cow::Owned(e.to_string()),
+            Cow::Owned(hint),
             None,
         )
     })
+}
+
+fn coerce_arg_types(mut args: serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    let number_keys = [
+        "importance", "min_activation", "tolerance", "strength", "prune_threshold",
+        "limit", "window_secs", "hours", "confidence",
+    ];
+    for key in number_keys {
+        if let Some(serde_json::Value::String(s)) = args.get(key) {
+            if let Ok(f) = s.parse::<f64>() {
+                args.insert(key.to_string(), serde_json::Value::from(f));
+            } else if let Ok(i) = s.parse::<i64>() {
+                args.insert(key.to_string(), serde_json::Value::from(i));
+            }
+        }
+    }
+    args
 }
 
 fn success_json<T: serde::Serialize>(data: &T) -> CallToolResult {
@@ -1631,11 +1662,20 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
 }
 
 fn slm_failed(operation: &str, model: &str, err: SlmError) -> rmcp::ErrorData {
+    let hint = match &err {
+        SlmError::RequestFailed(msg) => format!(
+            "Ollama request failed: {msg}. Is Ollama running? Try: ollama serve"
+        ),
+        SlmError::InvalidResponse(msg) => format!(
+            "Ollama returned unparseable output: {msg}. The model may have emitted thinking tokens or malformed JSON. Try a simpler query or check that model '{model}' is pulled."
+        ),
+        SlmError::ValidationFailed(msg) => format!(
+            "Ollama output failed validation: {msg}. The model returned structurally invalid data for operation '{operation}'."
+        ),
+    };
     rmcp::ErrorData::new(
         rmcp::model::ErrorCode(-32000),
-        Cow::Owned(format!(
-            "SLM operation '{operation}' failed for model '{model}': {err}"
-        )),
+        Cow::Owned(hint),
         None,
     )
 }
