@@ -4,7 +4,8 @@ use clap::Parser;
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
 use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
-    CompletePatternArgs, CompletePatternInput, CompletePatternResult, CompressMemoryInput,
+    ClassifyMemoryInput, CompletePatternArgs, CompletePatternInput, CompletePatternResult,
+    CompressMemoryInput,
     ExecuteSkillArgs, ExecuteSkillResult, ExtractPersonaInput, ExtractPersonaMemoryInput,
     ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
     MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs,
@@ -487,14 +488,44 @@ impl CogniMemServer {
             )));
         }
 
-        let tier = args.tier.unwrap_or_default();
-        let importance = args.importance.unwrap_or(0.5);
+        let content = args.content;
+        let classify = self
+            .state
+            .lock()
+            .await
+            .slm
+            .classify_memory(ClassifyMemoryInput {
+                content: content.clone(),
+            })
+            .map_err(|e| slm_failed("classify_memory", "active", e))?;
+
+        let tier = args.tier.unwrap_or(classify.tier);
+        let importance = args.importance.unwrap_or(classify.importance);
         let decay_rate = tier.decay_rate();
 
-        let mut memory = CognitiveMemoryUnit::new(args.content, tier, importance, decay_rate);
+        let mut memory = CognitiveMemoryUnit::new(content, tier, importance, decay_rate);
         if let Some(assoc_ids) = args.associations {
             memory.associations = assoc_ids;
         }
+        for assoc_id in classify.associations.iter().filter_map(|assoc| assoc.memory_id) {
+            if !memory.associations.contains(&assoc_id) {
+                memory.associations.push(assoc_id);
+            }
+        }
+        memory.model.suggested_tier = Some(classify.tier);
+        memory.model.suggested_importance = Some(classify.importance);
+        memory.model.tags = classify.tags;
+        let mut provenance_ids: Vec<uuid::Uuid> = classify
+            .associations
+            .iter()
+            .filter_map(|assoc| assoc.memory_id)
+            .collect();
+        provenance_ids.sort();
+        provenance_ids.dedup();
+        memory.model.provenance_ids = provenance_ids;
+        memory.model.model_name = Some(classify.metadata.model);
+        memory.model.confidence = Some(classify.metadata.confidence);
+        memory.model.suppress = classify.suppress;
 
         let memory_id = memory.id;
         let mut guard = self.state.lock().await;
@@ -523,6 +554,10 @@ impl CogniMemServer {
             })
             .map_err(|e| slm_failed("compress_memory", guard.slm.model_name(), e))?
             .summary;
+        if let Some(stored_memory) = guard.graph.get_memory_mut(&memory_id) {
+            stored_memory.model.compressed_content = Some(compressed.clone());
+        }
+        memory.model.compressed_content = Some(compressed.clone());
         guard.search.index(
             memory_id,
             &format!("{} {}", memory.content, compressed),
@@ -563,7 +598,7 @@ impl CogniMemServer {
         inc_remember();
         set_memory_count(guard.graph.len() as u64);
 
-        Ok(success_json(&RememberResult::success(memory_id)))
+        Ok(success_json(&RememberResult::success(&memory)))
     }
 
     async fn handle_recall(
@@ -658,6 +693,40 @@ impl CogniMemServer {
                 })
                 .map_err(|e| slm_failed("rerank_candidates", guard.slm.model_name(), e))?
                 .ranked_ids;
+
+            if ranked_ids.is_empty() {
+                return Err(slm_failed(
+                    "rerank_candidates",
+                    guard.slm.model_name(),
+                    SlmError::ValidationFailed(
+                        "rerank returned no IDs for non-empty candidate set".to_string(),
+                    ),
+                ));
+            }
+
+            let candidate_ids: std::collections::HashSet<uuid::Uuid> =
+                candidates.iter().map(|candidate| candidate.id).collect();
+            let mut seen = std::collections::HashSet::new();
+            for id in &ranked_ids {
+                if !candidate_ids.contains(id) {
+                    return Err(slm_failed(
+                        "rerank_candidates",
+                        guard.slm.model_name(),
+                        SlmError::ValidationFailed(format!(
+                            "rerank returned unknown candidate id {id}"
+                        )),
+                    ));
+                }
+                if !seen.insert(*id) {
+                    return Err(slm_failed(
+                        "rerank_candidates",
+                        guard.slm.model_name(),
+                        SlmError::ValidationFailed(format!(
+                            "rerank returned duplicate candidate id {id}"
+                        )),
+                    ));
+                }
+            }
 
             ranked_ids
                 .iter()

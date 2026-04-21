@@ -3,6 +3,26 @@ use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelMemoryMetadata {
+    #[serde(default)]
+    pub compressed_content: Option<String>,
+    #[serde(default)]
+    pub suggested_tier: Option<MemoryTier>,
+    #[serde(default)]
+    pub suggested_importance: Option<f32>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub provenance_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub suppress: bool,
+}
+
 /// Classification tiers for memories, modeled after human memory systems.
 ///
 /// Each tier has different decay rates and capacity limits, controlling
@@ -170,7 +190,7 @@ impl MemoryMetadata {
 /// The core memory unit in the cognitive memory system.
 ///
 /// Combines content, tier classification, activation metadata,
-/// associations, persona domain, and RACI roles.
+/// associations, persona domain, RACI roles, and model-derived metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CognitiveMemoryUnit {
     /// Unique identifier for this memory.
@@ -189,6 +209,9 @@ pub struct CognitiveMemoryUnit {
     /// RACI role assignments.
     #[serde(default)]
     pub raci: RaciRoles,
+    /// Persisted model-derived metadata for this memory.
+    #[serde(default)]
+    pub model: ModelMemoryMetadata,
 }
 
 impl Default for CognitiveMemoryUnit {
@@ -210,6 +233,7 @@ impl CognitiveMemoryUnit {
             associations: Vec::new(),
             persona: None,
             raci: RaciRoles::default(),
+            model: ModelMemoryMetadata::default(),
         }
     }
 }
@@ -246,15 +270,24 @@ pub struct RecallArgs {
 pub struct RememberResult {
     /// The ID of the newly stored memory.
     pub memory_id: Uuid,
+    /// The final tier used to store the memory.
+    pub tier: MemoryTier,
+    /// The final importance used to store the memory.
+    pub importance: f32,
+    /// Persisted model-derived metadata captured during remember.
+    pub model: ModelMemoryMetadata,
     /// Human-readable confirmation message.
     pub message: String,
 }
 
 impl RememberResult {
     /// Creates a success result for the given memory ID.
-    pub fn success(memory_id: Uuid) -> Self {
+    pub fn success(memory: &CognitiveMemoryUnit) -> Self {
         Self {
-            memory_id,
+            memory_id: memory.id,
+            tier: memory.tier,
+            importance: memory.metadata.importance,
+            model: memory.model.clone(),
             message: "Memory stored successfully".to_string(),
         }
     }

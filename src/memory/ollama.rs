@@ -135,16 +135,50 @@ impl SlmEngine for OllamaSlm {
     fn classify_memory(&self, input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError> {
         let prompt = classify_memory_prompt(&input);
         let mut output: ClassifyMemoryOutput = self.parse_json(self.generate(&prompt, 160))?;
+
         output.importance = output.importance.clamp(0.0, 1.0);
-        output.tags.retain(|tag| !tag.trim().is_empty());
+        output.tags = output
+            .tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect();
         output.tags.sort();
         output.tags.dedup();
+        if output.tags.len() > 20 {
+            return Err(SlmError::ValidationFailed(
+                "classification returned more than 20 tags".to_string(),
+            ));
+        }
+
+        let mut seen_association_ids = std::collections::HashSet::new();
+        let mut seen_association_labels = std::collections::HashSet::new();
         for assoc in &mut output.associations {
             assoc.label = assoc.label.trim().to_string();
             assoc.strength = assoc.strength.clamp(0.0, 1.0);
         }
-        output.associations.retain(|assoc| !assoc.label.is_empty());
-        output.associations.truncate(20);
+        output.associations.retain(|assoc| {
+            if assoc.label.is_empty() {
+                return false;
+            }
+
+            let label_key = assoc.label.to_lowercase();
+            if !seen_association_labels.insert(label_key) {
+                return false;
+            }
+
+            if let Some(id) = assoc.memory_id {
+                return seen_association_ids.insert(id);
+            }
+
+            true
+        });
+        if output.associations.len() > 20 {
+            return Err(SlmError::ValidationFailed(
+                "classification returned more than 20 associations".to_string(),
+            ));
+        }
+
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
