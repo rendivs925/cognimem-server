@@ -1,5 +1,7 @@
 use super::types::{ConflictResolution, PersonaProfile};
 
+pub const DEFAULT_SLM_MODEL: &str = "qwen2.5-coder:3b";
+
 /// A small-language-model interface for advanced memory operations.
 ///
 /// Implementations provide compression, reranking, conflict resolution,

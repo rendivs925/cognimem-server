@@ -20,7 +20,7 @@ pub use pattern::{
 };
 pub use persona::extract_persona;
 pub use skill::{detect_and_create_skill, find_skill};
-pub use slm::{NoOpSlm, SlmEngine};
+pub use slm::{DEFAULT_SLM_MODEL, NoOpSlm, SlmEngine};
 pub use ollama::OllamaSlm;
 pub use storage::RocksDbStore;
 pub use store::MemoryStore;

@@ -1,5 +1,6 @@
-use super::types::{ConflictResolution, PersonaProfile};
 use super::slm::{RerankCandidate, SlmEngine};
+use super::types::{ConflictResolution, PersonaProfile};
+use crate::memory::DEFAULT_SLM_MODEL;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -11,7 +12,7 @@ pub struct OllamaConfig {
 impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
-            model: "qwen2.5-coder:3b".to_string(),
+            model: DEFAULT_SLM_MODEL.to_string(),
             base_url: "http://localhost:11434".to_string(),
         }
     }
@@ -45,7 +46,7 @@ pub struct OllamaSlm {
 impl OllamaSlm {
     pub fn new(model: Option<String>, base_url: Option<String>) -> Self {
         let config = OllamaConfig {
-            model: model.unwrap_or_else(|| "qwen2.5-coder:3b".to_string()),
+            model: model.unwrap_or_else(|| DEFAULT_SLM_MODEL.to_string()),
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
         };
         Self {
@@ -206,7 +207,7 @@ mod tests {
     #[test]
     fn test_ollama_config_defaults() {
         let config = OllamaConfig::default();
-        assert_eq!(config.model, "qwen2.5-coder:3b");
+        assert_eq!(config.model, DEFAULT_SLM_MODEL);
         assert_eq!(config.base_url, "http://localhost:11434");
     }
 }

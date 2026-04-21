@@ -1,4 +1,5 @@
 use clap::Parser;
+use cognimem_server::memory::DEFAULT_SLM_MODEL;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -41,8 +42,8 @@ pub struct Cli {
 
     #[arg(
         long,
-        default_value = "qwen2.5-coder:3b",
-        help = "Ollama model to use for SLM operations (e.g., qwen2.5-coder:3b)"
+        default_value = DEFAULT_SLM_MODEL,
+        help = "Default model to use for all SLM-backed operations"
     )]
     pub ollama_model: Option<String>,
 
