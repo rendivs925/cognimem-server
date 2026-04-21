@@ -1000,3 +1000,69 @@ impl SessionBuffer {
         self.last_activity = Utc::now().timestamp();
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectConvention {
+    pub name: String,
+    pub description: String,
+    pub source_memory_ids: Vec<Uuid>,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectArchitecture {
+    pub component: String,
+    pub description: String,
+    pub relationships: Vec<String>,
+    pub source_memory_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectModel {
+    pub project_path: String,
+    pub conventions: Vec<ProjectConvention>,
+    pub architecture: Vec<ProjectArchitecture>,
+    pub active_tasks: Vec<Uuid>,
+    pub team_members: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl ProjectModel {
+    pub fn new(project_path: String) -> Self {
+        let now = Utc::now().timestamp();
+        Self {
+            project_path,
+            conventions: Vec::new(),
+            architecture: Vec::new(),
+            active_tasks: Vec::new(),
+            team_members: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn add_convention(&mut self, name: String, description: String, source_ids: Vec<Uuid>) {
+        self.conventions.push(ProjectConvention {
+            name,
+            description,
+            source_memory_ids: source_ids,
+            confidence: 0.7,
+        });
+        self.updated_at = Utc::now().timestamp();
+    }
+
+    pub fn add_architecture_note(&mut self, component: String, description: String, relationships: Vec<String>) {
+        self.architecture.push(ProjectArchitecture {
+            component,
+            description,
+            relationships,
+            source_memory_ids: Vec::new(),
+        });
+        self.updated_at = Utc::now().timestamp();
+    }
+
+    pub fn touch(&mut self) {
+        self.updated_at = Utc::now().timestamp();
+    }
+}

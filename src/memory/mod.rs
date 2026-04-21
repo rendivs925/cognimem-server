@@ -6,6 +6,7 @@ pub mod in_memory;
 pub mod ollama;
 pub mod pattern;
 pub mod persona;
+pub mod project_model;
 pub mod skill;
 pub mod slm;
 pub mod slm_prompts;
@@ -17,6 +18,7 @@ pub mod types;
 
 pub use capture::{aggregate_tool_events, CaptureIngest};
 pub use consolidation::{consolidate, detect_conflicts, resolve_conflicts};
+pub use project_model::{detect_convention_patterns, ProjectModelManager};
 pub use decay::{apply_decay_to_all, promote_memories, prune_below_threshold};
 pub use graph::MemoryGraph;
 pub use in_memory::InMemoryStore;
