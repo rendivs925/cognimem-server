@@ -14,7 +14,7 @@ use cognimem_server::memory::{
     NoOpSlm, ProjectModel, ProjectModelManager, SessionContext,
     detect_and_create_skill, detect_convention_patterns, extract_persona,
 };
-use cognimem_server::memory::slm_types::{BestPractice, SummarizeSessionInput, SummarizeTurnInput, SummarizeTurnOutput, TaskSummary, SlmMetadata};
+use cognimem_server::memory::slm_types::{BestPractice, ExtractBestPracticeInput, SummarizeSessionInput, SummarizeTurnInput, SummarizeTurnOutput, TaskSummary, SlmMetadata};
 use cognimem_server::search::{Fts5Search, SearchEngine};
 use uuid::Uuid;
 
@@ -791,4 +791,517 @@ fn test_full_remember_with_scope_and_persona() {
     let retrieved = graph.get_memory(&id).unwrap();
     assert_eq!(retrieved.content, "I prefer using async/await in Rust");
     assert!(retrieved.scope.is_global());
+}
+
+// ============================================================================
+// Edge Cases: Memory Limits and Eviction
+// ============================================================================
+
+#[test]
+fn test_sensory_tier_capacity() {
+    use cognimem_server::memory::types::MemoryMetadata;
+
+    let tier = MemoryTier::Sensory;
+    let capacity = tier.capacity();
+    assert_eq!(capacity, Some(50));
+}
+
+#[test]
+fn test_working_tier_capacity() {
+    let tier = MemoryTier::Working;
+    let capacity = tier.capacity();
+    assert_eq!(capacity, Some(200));
+}
+
+#[test]
+fn test_episodic_tier_unlimited() {
+    let tier = MemoryTier::Episodic;
+    let capacity = tier.capacity();
+    assert_eq!(capacity, None);
+}
+
+#[test]
+fn test_semantic_tier_unlimited() {
+    let tier = MemoryTier::Semantic;
+    let capacity = tier.capacity();
+    assert_eq!(capacity, None);
+}
+
+#[test]
+fn test_decay_rates() {
+    assert_eq!(MemoryTier::Sensory.decay_rate(), 2.0);
+    assert_eq!(MemoryTier::Working.decay_rate(), 1.0);
+    assert_eq!(MemoryTier::Episodic.decay_rate(), 0.5);
+    assert_eq!(MemoryTier::Semantic.decay_rate(), 0.2);
+    assert_eq!(MemoryTier::Procedural.decay_rate(), 0.1);
+}
+
+#[test]
+fn test_activation_floor() {
+    use cognimem_server::memory::types::MemoryMetadata;
+    use chrono::Utc;
+
+    let mut metadata = MemoryMetadata::new(0.5, 0.5);
+    // Force very old timestamps
+    metadata.rehearsal_history = vec![Utc::now().timestamp() - 1000000];
+    metadata.update_activation(Utc::now().timestamp());
+    // Activation should not go below floor
+    assert!(metadata.base_activation >= 0.01);
+}
+
+#[test]
+fn test_importance_clamped() {
+    use cognimem_server::memory::types::MemoryMetadata;
+
+    // Test upper bound
+    let m = MemoryMetadata::new(1.5, 0.5);
+    assert!(m.importance <= 1.0);
+
+    // Test lower bound
+    let m2 = MemoryMetadata::new(-0.5, 0.5);
+    assert!(m2.importance >= 0.0);
+}
+
+// ============================================================================
+// Edge Cases: Empty and Boundary Inputs
+// ============================================================================
+
+#[test]
+fn test_empty_content_memory() {
+    let mem = CognitiveMemoryUnit::new("".to_string(), MemoryTier::Sensory, 0.5, 2.0);
+    assert_eq!(mem.content, "");
+}
+
+#[test]
+fn test_very_long_content() {
+    let long_content = "a".repeat(100000);
+    let mem = CognitiveMemoryUnit::new(long_content.clone(), MemoryTier::Episodic, 0.5, 0.5);
+    assert_eq!(mem.content.len(), 100000);
+}
+
+#[test]
+fn test_unicode_content() {
+    let unicode = "Hello 世界 🌍 émoji";
+    let mem = CognitiveMemoryUnit::new(unicode.to_string(), MemoryTier::Episodic, 0.5, 0.5);
+    assert_eq!(mem.content, unicode);
+}
+
+#[test]
+fn test_special_characters_in_content() {
+    let special = "Line1\n\tTabbed\r\nWindows\rUnix\n";
+    let mem = CognitiveMemoryUnit::new(special.to_string(), MemoryTier::Episodic, 0.5, 0.5);
+    assert!(mem.content.contains('\n'));
+    assert!(mem.content.contains('\t'));
+}
+
+// ============================================================================
+// Edge Cases: MemoryScope Edge Cases
+// ============================================================================
+
+#[test]
+fn test_project_path_with_spaces() {
+    let scope = MemoryScope::Project { project_path: "/home/user/my project".to_string() };
+    assert!(!scope.is_global());
+    assert_eq!(scope.project_path(), Some("/home/user/my project"));
+}
+
+#[test]
+fn test_project_path_with_special_chars() {
+    let scope = MemoryScope::Project { project_path: "/home/user/project-v2.0_test".to_string() };
+    assert!(!scope.is_global());
+    assert!(scope.project_path().unwrap().contains('-'));
+}
+
+#[test]
+fn test_nested_project_path() {
+    let scope = MemoryScope::Project { project_path: "/home/user/repos/org/repo".to_string() };
+    assert!(!scope.is_global());
+    assert!(scope.project_path().unwrap().contains("repos"));
+}
+
+// ============================================================================
+// Edge Cases: Work Claims Edge Cases
+// ============================================================================
+
+#[test]
+fn test_claim_with_zero_hours() {
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
+
+    // Should work with 0 hours
+    let claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Research, 0);
+    assert_eq!(claim.leased_until, claim.created_at);
+}
+
+#[test]
+fn test_claim_with_long_lease() {
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
+
+    // Max lease 72 hours
+    let claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Implementation, 72);
+    let expected = claim.created_at + (72 * 3600);
+    assert_eq!(claim.leased_until, expected);
+}
+
+#[test]
+fn test_all_claim_types() {
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
+
+    let research = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Research, 1);
+    assert_eq!(research.claim_type, ClaimType::Research);
+
+    let impl_claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Implementation, 1);
+    assert_eq!(impl_claim.claim_type, ClaimType::Implementation);
+
+    let testing = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Testing, 1);
+    assert_eq!(testing.claim_type, ClaimType::Testing);
+
+    let review = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Review, 1);
+    assert_eq!(review.claim_type, ClaimType::Review);
+}
+
+// ============================================================================
+// Edge Cases: Persona Domains
+// ============================================================================
+
+#[test]
+fn test_all_persona_domains() {
+    assert_eq!(format!("{}", PersonaDomain::Biography), "biography");
+    assert_eq!(format!("{}", PersonaDomain::Experiences), "experiences");
+    assert_eq!(format!("{}", PersonaDomain::Preferences), "preferences");
+    assert_eq!(format!("{}", PersonaDomain::Social), "social");
+    assert_eq!(format!("{}", PersonaDomain::Work), "work");
+    assert_eq!(format!("{}", PersonaDomain::Psychometrics), "psychometrics");
+}
+
+// ============================================================================
+// Edge Cases: Session Buffer
+// ============================================================================
+
+#[test]
+fn test_session_buffer_should_flush_on_count() {
+    let mut buffer = SessionBuffer::new();
+    for i in 0..5 {
+        let mut evt = CaptureEvent::session_started("/test".to_string());
+        evt.timestamp = i as i64;
+        buffer.add_event(evt);
+    }
+    assert!(buffer.should_flush());
+}
+
+#[test]
+fn test_session_buffer_should_flush_on_idle() {
+    use chrono::Utc;
+
+    let mut buffer = SessionBuffer::new();
+    buffer.last_activity = Utc::now().timestamp() - 130; // 130 seconds ago
+    assert!(buffer.should_flush());
+}
+
+#[test]
+fn test_session_buffer_not_flush_immediately() {
+    use chrono::Utc;
+
+    let mut buffer = SessionBuffer::new();
+    buffer.add_event(CaptureEvent::session_started("/test".to_string()));
+    assert!(!buffer.should_flush());
+}
+
+// ============================================================================
+// Edge Cases: CaptureIngest Edge Cases
+// ============================================================================
+
+#[test]
+fn test_capture_ingest_no_suppress_normal_tools() {
+    use cognimem_server::memory::capture::CaptureIngest;
+
+    let ingest = CaptureIngest::new();
+
+    let tools = ["git", "npm", "cargo", "docker", "pytest", "eslint"];
+    for tool in tools {
+        let evt = CaptureEvent::tool_executed(tool.to_string(), true);
+        assert!(!ingest.should_suppress(&evt), "Tool {} should not be suppressed", tool);
+    }
+}
+
+#[test]
+fn test_capture_ingest_suppress_variants() {
+    use cognimem_server::memory::capture::CaptureIngest;
+
+    let ingest = CaptureIngest::new();
+
+    // Case insensitive
+    let evt = CaptureEvent::tool_executed("HEARTBEAT".to_string(), true);
+    assert!(ingest.should_suppress(&evt));
+
+    let evt2 = CaptureEvent::tool_executed("docker-compose".to_string(), true);
+    assert!(!ingest.should_suppress(&evt2));
+}
+
+#[test]
+fn test_event_to_memory_all_types() {
+    use cognimem_server::memory::capture::CaptureIngest;
+
+    let ingest = CaptureIngest::new();
+
+    let evt = CaptureEvent::session_started("/test".to_string());
+    let mem = ingest.event_to_memory(&evt, Some("/test".to_string()));
+    assert!(mem.is_some());
+
+    let evt2 = CaptureEvent::session_ended();
+    let mem2 = ingest.event_to_memory(&evt2, Some("/test".to_string()));
+    assert!(mem2.is_some());
+
+    let evt3 = CaptureEvent::task_created("Test task".to_string());
+    let mem3 = ingest.event_to_memory(&evt3, Some("/test".to_string()));
+    assert!(mem3.is_some());
+}
+
+#[test]
+fn test_event_to_memory_suppressed() {
+    use cognimem_server::memory::capture::CaptureIngest;
+
+    let ingest = CaptureIngest::new();
+    let evt = CaptureEvent::tool_executed("heartbeat".to_string(), true);
+    let mem = ingest.event_to_memory(&evt, None);
+    assert!(mem.is_none());
+}
+
+// ============================================================================
+// Edge Cases: Memory Summary
+// ============================================================================
+
+#[test]
+fn test_memory_summary_from() {
+    use cognimem_server::memory::types::MemorySummary;
+
+    let mem = CognitiveMemoryUnit::new(
+        "Test content".to_string(),
+        MemoryTier::Episodic,
+        0.8,
+        0.5,
+    );
+
+    let summary = MemorySummary::from(&mem);
+    assert_eq!(summary.content, "Test content");
+    assert_eq!(summary.tier, MemoryTier::Episodic);
+    assert_eq!(summary.scope, MemoryScope::Global);
+}
+
+// ============================================================================
+// Worst Case: Error Handling
+// ============================================================================
+
+#[test]
+fn test_aggregate_tool_events_empty() {
+    use cognimem_server::memory::capture::aggregate_tool_events;
+    use cognimem_server::memory::types::CaptureEvent;
+
+    let events: Vec<CaptureEvent> = vec![];
+    let result = aggregate_tool_events(&events);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_aggregate_single_event() {
+    use cognimem_server::memory::capture::aggregate_tool_events;
+
+    let evt = CaptureEvent::session_started("/test".to_string());
+    let result = aggregate_tool_events(&[evt]);
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_project_model_empty_project() {
+    let mut manager = ProjectModelManager::new();
+    manager.get_or_create("/empty/project");
+    let suggestions = manager.suggest_conventions("/empty/project");
+    assert!(suggestions.is_empty());
+}
+
+#[test]
+fn test_project_model_nonexistent_returns_empty() {
+    let manager = ProjectModelManager::new();
+    let suggestions = manager.suggest_conventions("/nonexistent");
+    assert!(suggestions.is_empty());
+}
+
+// ============================================================================
+// Edge Cases: SLM Edge Cases
+// ============================================================================
+
+#[test]
+fn test_summarize_empty_turns() {
+    let input = SummarizeTurnInput { turns: vec![] };
+    let output = SummarizeTurnOutput {
+        summary: "".to_string(),
+        key_decisions: vec![],
+        key_actions: vec![],
+        metadata: SlmMetadata { model: "test".to_string(), confidence: 0.0 },
+    };
+    assert_eq!(input.turns.len(), 0);
+    assert_eq!(output.key_decisions.len(), 0);
+}
+
+#[test]
+fn test_best_practice_empty_content() {
+    let input = ExtractBestPracticeInput {
+        content: "".to_string(),
+        context: None,
+    };
+    assert!(input.content.is_empty());
+}
+
+#[test]
+fn test_task_summary_all_fields() {
+    let task = TaskSummary {
+        task_id: Some(Uuid::new_v4()),
+        title: "Test task".to_string(),
+        status: "in_progress".to_string(),
+    };
+    assert!(task.task_id.is_some());
+    assert_eq!(task.status, "in_progress");
+}
+
+// ============================================================================
+// Edge Cases: Graph Edge Cases
+// ============================================================================
+
+#[test]
+fn test_graph_empty() {
+    let graph = MemoryGraph::new();
+    assert_eq!(graph.len(), 0);
+    assert!(graph.get_all_memories().is_empty());
+}
+
+#[test]
+fn test_graph_remove_nonexistent() {
+    let mut graph = MemoryGraph::new();
+    let id = Uuid::new_v4();
+    // Should not panic
+    graph.remove_memory(&id);
+    assert_eq!(graph.len(), 0);
+}
+
+#[test]
+fn test_graph_associations_nonexistent() {
+    let graph = MemoryGraph::new();
+    let id = Uuid::new_v4();
+    let associations = graph.get_associations(&id);
+    assert!(associations.is_empty());
+}
+
+#[test]
+fn test_graph_spreading_activation_empty() {
+    let graph = MemoryGraph::new();
+    let ids = vec![Uuid::new_v4()];
+    let result = graph.spreading_activation(&ids, 3, 0.5, 0.1);
+    assert!(result.is_empty());
+}
+
+// ============================================================================
+// Edge Cases: Embedding Edge Cases
+// ============================================================================
+
+#[test]
+fn test_embedding_empty_string() {
+    let embedder = HashEmbedding::new();
+    let emb = embedder.embed("");
+    assert!(!emb.is_empty());
+}
+
+#[test]
+fn test_embedding_deterministic() {
+    let embedder = HashEmbedding::new();
+    let emb1 = embedder.embed("test");
+    let emb2 = embedder.embed("test");
+    assert_eq!(emb1, emb2);
+}
+
+#[test]
+fn test_embedding_similar_texts() {
+    let embedder = HashEmbedding::new();
+    let sim = cosine_similarity(&embedder.embed("rust programming"), &embedder.embed("programming in rust"));
+    // Similar texts should have some similarity
+    assert!(sim > 0.0);
+}
+
+// ============================================================================
+// Edge Cases: Search Edge Cases
+// ============================================================================
+
+#[test]
+fn test_fuse_scores_empty() {
+    let empty_fts: Vec<Uuid> = vec![];
+    let empty_vec: Vec<(Uuid, f32)> = vec![];
+    let result = fuse_scores(&empty_fts, 0.4, &empty_vec, 0.6);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_fuse_scores_no_overlap() {
+    let id1 = Uuid::new_v4();
+    let id2 = Uuid::new_v4();
+
+    let fts_ids = vec![id1];
+    let vec_scores = vec![(id2, 0.9)];
+
+    let result = fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6);
+    assert_eq!(result.len(), 2);
+}
+
+// ============================================================================
+// Performance Edge Cases
+// ============================================================================
+
+#[test]
+fn test_many_memories_in_graph() {
+    let mut graph = MemoryGraph::new();
+
+    for i in 0..1000 {
+        let mem = CognitiveMemoryUnit::new(
+            format!("Memory {}", i),
+            MemoryTier::Episodic,
+            0.5,
+            0.5,
+        );
+        graph.add_memory(mem);
+    }
+
+    assert_eq!(graph.len(), 1000);
+}
+
+#[test]
+fn test_many_associations() {
+    let mut graph = MemoryGraph::new();
+
+    let mem1 = CognitiveMemoryUnit::new("Base".to_string(), MemoryTier::Episodic, 0.5, 0.5);
+    let id1 = graph.add_memory(mem1);
+
+    for i in 0..50 {
+        let mem = CognitiveMemoryUnit::new(format!("Associated {}", i), MemoryTier::Episodic, 0.5, 0.5);
+        let id = graph.add_memory(mem);
+        graph.add_association(&id1, &id, 0.5);
+    }
+
+    let associations = graph.get_associations(&id1);
+    assert_eq!(associations.len(), 50);
+}
+
+// ============================================================================
+// Security Edge Cases
+// ============================================================================
+
+#[test]
+fn test_memory_content_sanitization() {
+    // Content should be stored as-is, not sanitized
+    let dangerous = "<script>alert('xss')</script>";
+    let mem = CognitiveMemoryUnit::new(dangerous.to_string(), MemoryTier::Episodic, 0.5, 0.5);
+    assert_eq!(mem.content, dangerous);
+}
+
+#[test]
+fn test_memory_null_bytes() {
+    let with_nulls = "Test\x00Content";
+    let mem = CognitiveMemoryUnit::new(with_nulls.to_string(), MemoryTier::Episodic, 0.5, 0.5);
+    assert!(mem.content.contains('\0'));
 }
