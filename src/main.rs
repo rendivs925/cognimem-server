@@ -11,7 +11,7 @@ use cognimem_server::memory::{
     ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
     GetObservationsArgs, HandoffSummary, InMemoryStore, MemoryScope, MemoryStore, MemorySummary,
     MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
-    RememberArgs, RememberResult, RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput,
+    RememberArgs, RememberResult, ProjectModelManager, RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput,
     RocksDbStore, SearchArgs, SearchResult, SearchResults, SessionContext, SkillMemory,
     SlmEngine, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
@@ -55,6 +55,7 @@ struct CogniMemState {
     work_claims: HashMap<uuid::Uuid, WorkClaim>,
     session_context: Option<SessionContext>,
     handoffs: Vec<HandoffSummary>,
+    project_models: ProjectModelManager,
 }
 
 impl CogniMemState {
@@ -103,6 +104,7 @@ impl CogniMemState {
             work_claims: HashMap::new(),
             session_context: None,
             handoffs: Vec::new(),
+            project_models: ProjectModelManager::new(),
         }
     }
 }
@@ -399,6 +401,53 @@ impl ServerHandler for CogniMemServer {
                     }
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("summarize_turn"),
+                Cow::Borrowed("Summarize multiple turns into a concise overview"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "turns": { "type": "array" }
+                    },
+                    "required": ["turns"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("summarize_session"),
+                Cow::Borrowed("Summarize a complete session with completed and open tasks"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "turns": { "type": "array" },
+                        "completed_tasks": { "type": "array" },
+                        "open_tasks": { "type": "array" }
+                    },
+                    "required": ["turns"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("extract_best_practice"),
+                Cow::Borrowed("Extract coding best practices from content (DRY, KISS, SOLID, YAGNI, Guard Clauses)"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "content": { "type": "string", "description": "Content to analyze for best practices" },
+                        "context": { "type": "string", "description": "Optional context for the content" }
+                    },
+                    "required": ["content"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("get_project_conventions"),
+                Cow::Borrowed("Get extracted conventions for a project"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project_path": { "type": "string" }
+                    },
+                    "required": ["project_path"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -439,6 +488,10 @@ impl ServerHandler for CogniMemServer {
             "claim_work" => self.handle_claim_work(args).await,
             "release_work" => self.handle_release_work(args).await,
             "find_unclaimed_work" => self.handle_find_unclaimed_work(args).await,
+            "summarize_turn" => self.handle_summarize_turn(args).await,
+            "summarize_session" => self.handle_summarize_session(args).await,
+            "extract_best_practice" => self.handle_extract_best_practice(args).await,
+            "get_project_conventions" => self.handle_get_project_conventions(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -626,6 +679,7 @@ impl CogniMemServer {
                 work_claims: _,
                 session_context: _,
                 handoffs: _,
+                project_models: _,
             } = &mut *guard;
             if let Some(skill_memory) = detect_and_create_skill(
                 graph,
@@ -908,6 +962,7 @@ impl CogniMemServer {
             work_claims: _,
             session_context: _,
             handoffs: _,
+            project_models: _,
         } = &mut *guard;
         let total = graph.len();
 
@@ -1405,6 +1460,149 @@ impl CogniMemServer {
         Ok(success_json(&serde_json::json!({
             "available": available,
             "count": available.len()
+        })))
+    }
+
+    async fn handle_summarize_turn(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use cognimem_server::memory::slm_types::{SummarizeTurnInput, SummarizeTurnOutput};
+
+        let turns = args.get("turns")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| invalid_params("turns is required"))?
+            .iter()
+            .map(|v| {
+                let turn_id = v.get("turn_id")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    .unwrap_or_else(uuid::Uuid::new_v4);
+                let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let tool_usage: Vec<String> = v.get("tool_usage")
+                    .and_then(|x| x.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let decisions: Vec<String> = v.get("decisions")
+                    .and_then(|x| x.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                cognimem_server::memory::slm_types::TurnSummary {
+                    turn_id,
+                    content,
+                    tool_usage,
+                    decisions,
+                }
+            })
+            .collect();
+
+        let input = SummarizeTurnInput { turns };
+        let guard = self.state.lock().await;
+        let output = guard.slm.summarize_turn(input)
+            .map_err(|e| slm_failed("summarize_turn", guard.slm.model_name(), e))?;
+
+        Ok(success_json(&output))
+    }
+
+    async fn handle_summarize_session(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use cognimem_server::memory::slm_types::{SummarizeSessionInput, TaskSummary};
+
+        let turns: Vec<_> = args.get("turns")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().map(|v| {
+                    let turn_id = v.get("turn_id")
+                        .and_then(|x| x.as_str())
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                        .unwrap_or_else(uuid::Uuid::new_v4);
+                    let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    cognimem_server::memory::slm_types::TurnSummary {
+                        turn_id,
+                        content,
+                        tool_usage: Vec::new(),
+                        decisions: Vec::new(),
+                    }
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        let completed_tasks: Vec<TaskSummary> = args.get("completed_tasks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().filter_map(|v| {
+                    Some(TaskSummary {
+                        task_id: v.get("task_id").and_then(|x| x.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok()),
+                        title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                        status: v.get("status").and_then(|x| x.as_str()).unwrap_or("completed").to_string(),
+                    })
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        let open_tasks: Vec<TaskSummary> = args.get("open_tasks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().filter_map(|v| {
+                    Some(TaskSummary {
+                        task_id: v.get("task_id").and_then(|x| x.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok()),
+                        title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                        status: v.get("status").and_then(|x| x.as_str()).unwrap_or("open").to_string(),
+                    })
+                }).collect()
+            })
+            .unwrap_or_default();
+
+        let input = SummarizeSessionInput {
+            turns,
+            completed_tasks,
+            open_tasks,
+        };
+        let guard = self.state.lock().await;
+        let output = guard.slm.summarize_session(input)
+            .map_err(|e| slm_failed("summarize_session", guard.slm.model_name(), e))?;
+
+        Ok(success_json(&output))
+    }
+
+    async fn handle_extract_best_practice(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
+
+        let content = args.get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("content is required"))?
+            .to_string();
+        let context = args.get("context").and_then(|v| v.as_str()).map(String::from);
+
+        let input = ExtractBestPracticeInput { content, context };
+        let guard = self.state.lock().await;
+        let output = guard.slm.extract_best_practice(input)
+            .map_err(|e| slm_failed("extract_best_practice", guard.slm.model_name(), e))?;
+
+        Ok(success_json(&output))
+    }
+
+    async fn handle_get_project_conventions(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let project_path = args.get("project_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("project_path is required"))?
+            .to_string();
+
+        let guard = self.state.lock().await;
+        let conventions = guard.project_models.suggest_conventions(&project_path);
+
+        Ok(success_json(&serde_json::json!({
+            "project_path": project_path,
+            "conventions": conventions,
+            "count": conventions.len()
         })))
     }
 }
