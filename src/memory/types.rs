@@ -779,3 +779,121 @@ pub struct ExtractPersonaResult {
     /// The extracted persona profiles, one per detected domain.
     pub profiles: Vec<PersonaProfile>,
 }
+
+/// Session context for inter-session coordination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionContext {
+    pub session_id: Uuid,
+    pub project_path: Option<String>,
+    pub agent_persona: Option<String>,
+    pub started_at: i64,
+    pub last_active: i64,
+}
+
+impl SessionContext {
+    pub fn new(project_path: Option<String>, agent_persona: Option<String>) -> Self {
+        let now = Utc::now().timestamp();
+        Self {
+            session_id: Uuid::new_v4(),
+            project_path,
+            agent_persona,
+            started_at: now,
+            last_active: now,
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.last_active = Utc::now().timestamp();
+    }
+}
+
+/// Work claim types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimType {
+    Research,
+    Implementation,
+    Testing,
+    Review,
+}
+
+/// Work claim status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimStatus {
+    Active,
+    Completed,
+    Released,
+}
+
+/// A work claim preventing duplicate work across sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkClaim {
+    pub memory_id: Uuid,
+    pub session_id: Uuid,
+    pub claim_type: ClaimType,
+    pub leased_until: i64,
+    pub status: ClaimStatus,
+    pub created_at: i64,
+}
+
+impl WorkClaim {
+    pub fn new(memory_id: Uuid, session_id: Uuid, claim_type: ClaimType, hours: i64) -> Self {
+        let now = Utc::now().timestamp();
+        Self {
+            memory_id,
+            session_id,
+            claim_type,
+            leased_until: now + (hours * 3600),
+            status: ClaimStatus::Active,
+            created_at: now,
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        Utc::now().timestamp() > self.leased_until
+    }
+
+    pub fn release(&mut self) {
+        self.status = ClaimStatus::Released;
+    }
+
+    pub fn complete(&mut self) {
+        self.status = ClaimStatus::Completed;
+    }
+}
+
+/// A handoff summary for transferring context between sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffSummary {
+    pub from_session: Uuid,
+    pub to_session: Option<Uuid>,
+    pub project_path: Option<String>,
+    pub summary: String,
+    pub unresolved: Vec<String>,
+    pub next_steps: Vec<String>,
+    pub relevant_memories: Vec<Uuid>,
+    pub created_at: i64,
+}
+
+impl HandoffSummary {
+    pub fn new(
+        from_session: Uuid,
+        project_path: Option<String>,
+        summary: String,
+        unresolved: Vec<String>,
+        next_steps: Vec<String>,
+        relevant_memories: Vec<Uuid>,
+    ) -> Self {
+        Self {
+            from_session,
+            to_session: None,
+            project_path,
+            summary,
+            unresolved,
+            next_steps,
+            relevant_memories,
+            created_at: Utc::now().timestamp(),
+        }
+    }
+}

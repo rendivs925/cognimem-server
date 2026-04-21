@@ -1,18 +1,19 @@
 mod config;
 
+use std::collections::HashMap;
+
 use clap::Parser;
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
 use cognimem_server::memory::{
-    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
-    ClassifyMemoryInput, CompletePatternArgs, CompletePatternInput, CompletePatternResult,
-    CompressMemoryInput,
-    ExecuteSkillArgs, ExecuteSkillResult, ExtractPersonaInput, ExtractPersonaMemoryInput,
-    ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
-    MemoryScope, MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult,
-    RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
-    RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput, RocksDbStore,
-    SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, SlmError, TimelineArgs,
-    TimelineResult,
+    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus, ClaimType,
+    CognitiveMemoryUnit, ClassifyMemoryInput, CompletePatternArgs, CompletePatternInput,
+    CompletePatternResult, CompressMemoryInput, ExecuteSkillArgs, ExecuteSkillResult,
+    ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
+    GetObservationsArgs, HandoffSummary, InMemoryStore, MemoryScope, MemoryStore, MemorySummary,
+    MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
+    RememberArgs, RememberResult, RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput,
+    RocksDbStore, SearchArgs, SearchResult, SearchResults, SessionContext, SkillMemory,
+    SlmEngine, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
@@ -51,6 +52,9 @@ struct CogniMemState {
     search: Box<dyn SearchEngine + Send>,
     embedder: Box<dyn EmbeddingEngine + Send>,
     slm: Box<dyn SlmEngine + Send>,
+    work_claims: HashMap<uuid::Uuid, WorkClaim>,
+    session_context: Option<SessionContext>,
+    handoffs: Vec<HandoffSummary>,
 }
 
 impl CogniMemState {
@@ -96,6 +100,9 @@ impl CogniMemState {
             search,
             embedder,
             slm,
+            work_claims: HashMap::new(),
+            session_context: None,
+            handoffs: Vec::new(),
         }
     }
 }
@@ -356,6 +363,42 @@ impl ServerHandler for CogniMemServer {
                     "required": ["memory_id"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("claim_work"),
+                Cow::Borrowed("Claim exclusive right to work on a memory/task"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": { "type": "string", "format": "uuid" },
+                        "claim_type": { "type": "string", "enum": ["research", "implementation", "testing", "review"] },
+                        "hours": { "type": "integer", "minimum": 1, "maximum": 72, "description": "Lease duration in hours (default: 24)" }
+                    },
+                    "required": ["memory_id", "claim_type"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("release_work"),
+                Cow::Borrowed("Release a work claim"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": { "type": "string", "format": "uuid" },
+                        "complete": { "type": "boolean", "description": "Mark as completed (true) or released (false)" }
+                    },
+                    "required": ["memory_id"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("find_unclaimed_work"),
+                Cow::Borrowed("Find memories or tasks available for claiming"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project_path": { "type": "string", "description": "Filter by project path" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+                    }
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -393,6 +436,9 @@ impl ServerHandler for CogniMemServer {
             "complete_pattern" => self.handle_complete_pattern(args).await,
             "extract_persona" => self.handle_extract_persona(args).await,
             "assign_role" => self.handle_assign_role(args).await,
+            "claim_work" => self.handle_claim_work(args).await,
+            "release_work" => self.handle_release_work(args).await,
+            "find_unclaimed_work" => self.handle_find_unclaimed_work(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -577,6 +623,9 @@ impl CogniMemServer {
                 search,
                 embedder,
                 slm,
+                work_claims: _,
+                session_context: _,
+                handoffs: _,
             } = &mut *guard;
             if let Some(skill_memory) = detect_and_create_skill(
                 graph,
@@ -856,6 +905,9 @@ impl CogniMemServer {
             search,
             embedder,
             slm,
+            work_claims: _,
+            session_context: _,
+            handoffs: _,
         } = &mut *guard;
         let total = graph.len();
 
@@ -1216,6 +1268,144 @@ impl CogniMemServer {
             raci,
             message: "RACI roles updated successfully".to_string(),
         }))
+    }
+
+    async fn handle_claim_work(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let memory_id = uuid::Uuid::parse_str(
+            args.get("memory_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| invalid_params("memory_id is required"))?
+        ).map_err(|_| invalid_params("Invalid memory_id format"))?;
+
+        let claim_type_str = args.get("claim_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("claim_type is required"))?;
+        let claim_type = match claim_type_str {
+            "research" => ClaimType::Research,
+            "implementation" => ClaimType::Implementation,
+            "testing" => ClaimType::Testing,
+            "review" => ClaimType::Review,
+            _ => return Err(invalid_params("Invalid claim_type. Must be: research, implementation, testing, or review")),
+        };
+        let hours = args.get("hours")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(24) as i64;
+
+        let mut guard = self.state.lock().await;
+
+        let session_id = guard.session_context.as_ref()
+            .map(|s| s.session_id)
+            .unwrap_or_else(|| uuid::Uuid::new_v4());
+
+        if let Some(existing) = guard.work_claims.get(&memory_id) {
+            if existing.status == ClaimStatus::Active && !existing.is_expired() {
+                return Err(invalid_params(&format!(
+                    "Memory {} is already claimed by session {}",
+                    memory_id, existing.session_id
+                )));
+            }
+        }
+
+        let claim = WorkClaim::new(memory_id, session_id, claim_type, hours);
+        let claim_clone = claim.clone();
+        guard.work_claims.insert(memory_id, claim);
+
+        Ok(success_json(&serde_json::json!({
+            "memory_id": memory_id,
+            "session_id": session_id,
+            "claim_type": claim_clone.claim_type.to_string(),
+            "leased_until": claim_clone.leased_until,
+            "status": claim_clone.status.to_string(),
+            "message": format!("Claimed memory {} for {} hours", memory_id, hours)
+        })))
+    }
+
+    async fn handle_release_work(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let memory_id = uuid::Uuid::parse_str(
+            args.get("memory_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| invalid_params("memory_id is required"))?
+        ).map_err(|_| invalid_params("Invalid memory_id format"))?;
+
+        let complete = args.get("complete")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let mut guard = self.state.lock().await;
+
+        let claim = guard.work_claims.get_mut(&memory_id)
+            .ok_or_else(|| invalid_params(&format!("No claim found for memory {}", memory_id)))?;
+
+        if complete {
+            claim.complete();
+        } else {
+            claim.release();
+        }
+
+        let status = claim.status.to_string();
+        let message = if complete {
+            format!("Marked memory {} as completed", memory_id)
+        } else {
+            format!("Released claim on memory {}", memory_id)
+        };
+
+        Ok(success_json(&serde_json::json!({
+            "memory_id": memory_id,
+            "status": status,
+            "message": message
+        })))
+    }
+
+    async fn handle_find_unclaimed_work(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let project_path = args.get("project_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let limit = args.get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        let mut guard = self.state.lock().await;
+
+        let mut available: Vec<serde_json::Value> = Vec::new();
+
+        for (id, claim) in &guard.work_claims {
+            if claim.status == ClaimStatus::Active && claim.is_expired() {
+                if let Some(mem) = guard.graph.get_memory(id) {
+                    if let Some(ref pp) = project_path {
+                        if let Some(ref mem_pp) = mem.scope.project_path() {
+                            if mem_pp != pp {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
+                    available.push(serde_json::json!({
+                        "memory_id": mem.id,
+                        "content": mem.content.chars().take(200).collect::<String>(),
+                        "tier": mem.tier.to_string(),
+                        "claim_type": claim.claim_type.to_string(),
+                        "expired_at": claim.leased_until
+                    }));
+                }
+            }
+        }
+
+        available.truncate(limit);
+
+        Ok(success_json(&serde_json::json!({
+            "available": available,
+            "count": available.len()
+        })))
     }
 }
 
