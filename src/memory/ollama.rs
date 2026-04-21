@@ -14,6 +14,7 @@ use super::slm_types::{
     SummarizeTurnOutput,
 };
 use crate::memory::DEFAULT_SLM_MODEL;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -51,7 +52,8 @@ struct OllamaResponse {
 }
 
 pub struct OllamaSlm {
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
+    check_client: reqwest::blocking::Client,
     model: String,
     base_url: String,
 }
@@ -63,23 +65,27 @@ impl OllamaSlm {
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
         };
         Self {
-            client: reqwest::blocking::Client::builder()
+            client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
-                .expect("failed to build reqwest client"),
+                .expect("failed to build async reqwest client"),
+            check_client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("failed to build blocking reqwest client"),
             model: config.model,
             base_url: config.base_url,
         }
     }
 
     pub fn check_available(&self) -> bool {
-        match self.client.get(&self.base_url).send() {
+        match self.check_client.get(&self.base_url).send() {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false,
         }
     }
 
-    fn generate(&self, prompt: &str, max_tokens: usize) -> Result<String, SlmError> {
+    async fn generate(&self, prompt: &str, max_tokens: usize) -> Result<String, SlmError> {
         let request = OllamaRequest {
             model: self.model.clone(),
             prompt: prompt.to_string(),
@@ -91,9 +97,10 @@ impl OllamaSlm {
         };
 
         let url = format!("{}/api/generate", self.base_url);
-        match self.client.post(&url).json(&request).send() {
+        match self.client.post(&url).json(&request).send().await {
             Ok(resp) => resp
                 .json::<OllamaResponse>()
+                .await
                 .map(|r| r.response)
                 .map_err(|e| SlmError::InvalidResponse(e.to_string())),
             Err(e) => {
@@ -105,45 +112,79 @@ impl OllamaSlm {
 
     fn extract_json(raw: &str) -> String {
         let mut s = raw.to_string();
-        while let Some(start) = s.find("<think>") {
-            let end = s.find("</think>").unwrap_or(s.len());
-            s.replace_range(start..end.min(s.len()).min(start + "</think>".len()), "");
-        }
-        while let Some(start) = s.find("```json") {
-            let after_fence = start + 7;
-            if let Some(end) = s[after_fence..].find("```") {
-                let json_block = s[after_fence..after_fence + end].trim().to_string();
-                return json_block;
-            }
-        }
-        while let Some(start) = s.find("```") {
-            let after_fence = start + 3;
-            if let Some(end) = s[after_fence..].find("```") {
-                let block = s[after_fence..after_fence + end].trim().to_string();
-                if block.starts_with('{') || block.starts_with('[') {
-                    return block;
+        loop {
+            if let Some(start) = s.find("<think>") {
+                let _tag_len = 7;
+                if let Some(end) = s.find("</think>") {
+                    s.replace_range(start..end + 8, "");
+                    continue;
+                } else {
+                    s.replace_range(start.., "");
+                    break;
                 }
             }
             break;
         }
-        if let Some(first_brace) = s.find('{') {
-            if let Some(last_brace) = s.rfind('}') {
-                if last_brace > first_brace {
-                    return s[first_brace..=last_brace].to_string();
+        if let Some(start) = s.find("```json") {
+            let after = start + 7;
+            if let Some(end) = s[after..].find("```") {
+                return s[after..after + end].trim().to_string();
+            }
+        }
+        if let Some(start) = s.find("```") {
+            let after = start + 3;
+            if let Some(end) = s[after..].find("```") {
+                let block = s[after..after + end].trim().to_string();
+                if block.starts_with('{') || block.starts_with('[') {
+                    return block;
                 }
             }
         }
-        if let Some(first_bracket) = s.find('[') {
-            if let Some(last_bracket) = s.rfind(']') {
-                if last_bracket > first_bracket {
-                    return s[first_bracket..=last_bracket].to_string();
+        if let Some(first) = s.find('{') {
+            if let Some(last) = s.rfind('}') {
+                if last > first {
+                    return s[first..=last].to_string();
+                }
+            }
+        }
+        if let Some(first) = s.find('[') {
+            if let Some(last) = s.rfind(']') {
+                if last > first {
+                    return s[first..=last].to_string();
                 }
             }
         }
         s
     }
 
-    fn parse_json<T: serde::de::DeserializeOwned>(
+    fn normalize_array_fields(json_str: &str) -> String {
+        let mut val: serde_json::Value = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(_) => return json_str.to_string(),
+        };
+        if let serde_json::Value::Object(ref mut map) = val {
+            let array_fields = [
+                "ranked_ids", "tags", "steps", "evidence", "source_ids",
+                "associations", "practices", "applies_to", "key_decisions", "key_actions",
+                "completed", "unresolved", "next_steps", "consulted", "informed",
+            ];
+            for field in array_fields {
+                if let Some(serde_json::Value::Object(obj)) = map.get(field) {
+                    let items: Vec<serde_json::Value> = obj
+                        .keys()
+                        .filter_map(|k| k.parse::<usize>().ok())
+                        .filter_map(|i| obj.get(&i.to_string()).cloned())
+                        .collect();
+                    if !items.is_empty() {
+                        map.insert(field.to_string(), serde_json::Value::Array(items));
+                    }
+                }
+            }
+        }
+        serde_json::to_string(&val).unwrap_or_else(|_| json_str.to_string())
+    }
+
+    async fn parse_json<T: serde::de::DeserializeOwned>(
         &self,
         response: Result<String, SlmError>,
     ) -> Result<T, SlmError> {
@@ -160,44 +201,20 @@ impl OllamaSlm {
         })
     }
 
-    fn normalize_array_fields(json_str: &str) -> String {
-        let mut val: serde_json::Value = match serde_json::from_str(json_str) {
-            Ok(v) => v,
-            Err(_) => return json_str.to_string(),
-        };
-        if let serde_json::Value::Object(ref mut map) = val {
-            let array_fields = ["ranked_ids", "tags", "steps", "evidence", "source_ids",
-                "associations", "practices", "applies_to", "key_decisions", "key_actions",
-                "completed", "unresolved", "next_steps", "consulted", "informed"];
-            for field in array_fields {
-                if let Some(serde_json::Value::Object(obj)) = map.get(field) {
-                    let mut items: Vec<serde_json::Value> = obj
-                        .keys()
-                        .filter_map(|k| k.parse::<usize>().ok())
-                        .filter_map(|i| obj.get(&i.to_string()).cloned())
-                        .collect();
-                    if !items.is_empty() {
-                        map.insert(field.to_string(), serde_json::Value::Array(items));
-                    }
-                }
-            }
-        }
-        serde_json::to_string(&val).unwrap_or_else(|_| json_str.to_string())
-    }
-
     fn clamp_confidence(confidence: f32) -> f32 {
         confidence.clamp(0.0, 1.0)
     }
 }
 
+#[async_trait]
 impl SlmEngine for OllamaSlm {
     fn model_name(&self) -> &str {
         &self.model
     }
 
-    fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError> {
+    async fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError> {
         let prompt = compress_memory_prompt(&input);
-        let mut output: CompressMemoryOutput = self.parse_json(self.generate(&prompt, 80))?;
+        let mut output: CompressMemoryOutput = self.parse_json(self.generate(&prompt, 80).await).await?;
         output.summary = output.summary.trim().to_string();
         if output.summary.is_empty() {
             return Err(SlmError::ValidationFailed(
@@ -209,9 +226,9 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    fn classify_memory(&self, input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError> {
+    async fn classify_memory(&self, input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError> {
         let prompt = classify_memory_prompt(&input);
-        let mut output: ClassifyMemoryOutput = self.parse_json(self.generate(&prompt, 160))?;
+        let mut output: ClassifyMemoryOutput = self.parse_json(self.generate(&prompt, 160).await).await?;
 
         output.importance = output.importance.clamp(0.0, 1.0);
         output.tags = output
@@ -228,27 +245,21 @@ impl SlmEngine for OllamaSlm {
             ));
         }
 
-        let mut seen_association_ids = std::collections::HashSet::new();
-        let mut seen_association_labels = std::collections::HashSet::new();
         for assoc in &mut output.associations {
             assoc.label = assoc.label.trim().to_string();
             assoc.strength = assoc.strength.clamp(0.0, 1.0);
         }
+        let mut seen_labels = std::collections::HashSet::new();
+        let mut seen_ids = std::collections::HashSet::new();
         output.associations.retain(|assoc| {
-            if assoc.label.is_empty() {
-                return false;
-            }
-
-            let label_key = assoc.label.to_lowercase();
-            if !seen_association_labels.insert(label_key) {
-                return false;
-            }
-
+            if assoc.label.is_empty() { return false; }
+            let key = assoc.label.to_lowercase();
+            if !seen_labels.insert(key) { return false; }
             if let Some(id) = assoc.memory_id {
-                return seen_association_ids.insert(id);
+                seen_ids.insert(id)
+            } else {
+                true
             }
-
-            true
         });
         if output.associations.len() > 20 {
             return Err(SlmError::ValidationFailed(
@@ -261,7 +272,7 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    fn rerank_candidates(
+    async fn rerank_candidates(
         &self,
         input: RerankCandidatesInput,
     ) -> Result<RerankCandidatesOutput, SlmError> {
@@ -276,26 +287,26 @@ impl SlmEngine for OllamaSlm {
         }
 
         let prompt = rerank_candidates_prompt(&input);
-        let mut output: RerankCandidatesOutput = self.parse_json(self.generate(&prompt, 160))?;
+        let mut output: RerankCandidatesOutput = self.parse_json(self.generate(&prompt, 160).await).await?;
         output.ranked_ids.truncate(input.top_n);
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    fn resolve_conflict(
+    async fn resolve_conflict(
         &self,
         input: ResolveConflictInput,
     ) -> Result<ResolveConflictOutput, SlmError> {
         let prompt = resolve_conflict_prompt(&input);
-        let mut output: ResolveConflictOutput = self.parse_json(self.generate(&prompt, 120))?;
+        let mut output: ResolveConflictOutput = self.parse_json(self.generate(&prompt, 120).await).await?;
         output.merged_summary = output.merged_summary.map(|s| s.trim().to_string());
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    fn extract_persona(
+    async fn extract_persona(
         &self,
         input: ExtractPersonaInput,
     ) -> Result<ExtractPersonaOutput, SlmError> {
@@ -310,7 +321,7 @@ impl SlmEngine for OllamaSlm {
         }
 
         let prompt = extract_persona_prompt(&input);
-        let mut output: ExtractPersonaOutput = self.parse_json(self.generate(&prompt, 500))?;
+        let mut output: ExtractPersonaOutput = self.parse_json(self.generate(&prompt, 500).await).await?;
         for profile in &mut output.profiles {
             profile.summary = profile.summary.trim().to_string();
             profile.confidence = profile.confidence.clamp(0.0, 1.0);
@@ -322,9 +333,9 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
+    async fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
         let prompt = distill_skill_prompt(&input);
-        let mut output: DistillSkillOutput = self.parse_json(self.generate(&prompt, 220))?;
+        let mut output: DistillSkillOutput = self.parse_json(self.generate(&prompt, 220).await).await?;
         output.name = output.name.trim().to_string();
         output.pattern = output.pattern.trim().to_string();
         output.steps.retain(|step| !step.trim().is_empty());
@@ -338,12 +349,12 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    fn complete_pattern(
+    async fn complete_pattern(
         &self,
         input: CompletePatternInput,
     ) -> Result<CompletePatternOutput, SlmError> {
         let prompt = complete_pattern_prompt(&input);
-        let mut output: CompletePatternOutput = self.parse_json(self.generate(&prompt, 180))?;
+        let mut output: CompletePatternOutput = self.parse_json(self.generate(&prompt, 180).await).await?;
         output.completed_text = output.completed_text.trim().to_string();
         output.evidence.retain(|item| !item.trim().is_empty());
         if output.completed_text.is_empty() {
@@ -356,25 +367,25 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError> {
+    async fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError> {
         let prompt = summarize_turn_prompt(&input);
-        let mut output: SummarizeTurnOutput = self.parse_json(self.generate(&prompt, 180))?;
+        let mut output: SummarizeTurnOutput = self.parse_json(self.generate(&prompt, 180).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError> {
+    async fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError> {
         let prompt = summarize_session_prompt(&input);
-        let mut output: SummarizeSessionOutput = self.parse_json(self.generate(&prompt, 240))?;
+        let mut output: SummarizeSessionOutput = self.parse_json(self.generate(&prompt, 240).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    fn extract_best_practice(&self, input: ExtractBestPracticeInput) -> Result<ExtractBestPracticeOutput, SlmError> {
+    async fn extract_best_practice(&self, input: ExtractBestPracticeInput) -> Result<ExtractBestPracticeOutput, SlmError> {
         let prompt = extract_best_practice_prompt(&input);
-        let mut output: ExtractBestPracticeOutput = self.parse_json(self.generate(&prompt, 180))?;
+        let mut output: ExtractBestPracticeOutput = self.parse_json(self.generate(&prompt, 180).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
@@ -399,10 +410,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_json_with_thinking() {
-        let raw = r#"<tool_call>thinking
-Let me analyze this content
-{"summary":"test","metadata":{"model":"qwen2.5-coder:3b","confidence":0.5}}"#;
+    fn test_extract_json_with_think_tags() {
+        let raw = "<think>Let me analyze</think>{\"summary\":\"test\",\"metadata\":{\"model\":\"qwen2.5-coder:3b\",\"confidence\":0.5}}";
         let extracted = OllamaSlm::extract_json(raw);
         assert!(extracted.starts_with('{'));
         assert!(extracted.contains("summary"));
@@ -429,5 +438,13 @@ Let me analyze this content
         let raw = "Some text {\"a\":{\"b\":1},\"c\":2} more text";
         let extracted = OllamaSlm::extract_json(raw);
         assert_eq!(extracted, "{\"a\":{\"b\":1},\"c\":2}");
+    }
+
+    #[test]
+    fn test_normalize_array_fields_object_as_array() {
+        let json = r#"{"ranked_ids":{"0":"aaa","1":"bbb"}}"#;
+        let normalized = OllamaSlm::normalize_array_fields(json);
+        let parsed: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+        assert!(parsed["ranked_ids"].is_array());
     }
 }

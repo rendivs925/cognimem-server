@@ -8,7 +8,7 @@ pub struct CogniMemState {
     pub graph: MemoryGraph,
     pub storage: Box<dyn MemoryStore>,
     pub search: Box<dyn SearchEngine + Send>,
-    pub embedder: Box<dyn EmbeddingEngine + Send>,
+    pub embedder: Box<dyn EmbeddingEngine + Send + Sync>,
     pub slm: Box<dyn SlmEngine + Send>,
     pub work_claims: HashMap<uuid::Uuid, WorkClaim>,
     pub session_context: Option<SessionContext>,
@@ -30,7 +30,7 @@ impl CogniMemState {
                 Box::new(SubstringSearch)
             }
         };
-        let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
+        let embedder: Box<dyn EmbeddingEngine + Send + Sync> = Box::new(HashEmbedding::new());
 
         let slm: Box<dyn SlmEngine + Send> = if let Some(model) = ollama_model {
             let ollama = OllamaSlm::new(Some(model), ollama_url);

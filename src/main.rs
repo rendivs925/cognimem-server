@@ -556,15 +556,16 @@ impl CogniMemServer {
         }
 
         let content = args.content;
-        let classify = self
-            .state
-            .lock()
-            .await
-            .slm
-            .classify_memory(ClassifyMemoryInput {
-                content: content.clone(),
-            })
-            .map_err(|e| slm_failed("classify_memory", "active", e))?;
+        let classify = {
+            let guard = self.state.lock().await;
+            guard
+                .slm
+                .classify_memory(ClassifyMemoryInput {
+                    content: content.clone(),
+                })
+                .await
+                .map_err(|e| slm_failed("classify_memory", "active", e))?
+        };
 
         let tier = args.tier.unwrap_or(classify.tier);
         let importance = args.importance.unwrap_or(classify.importance);
@@ -619,6 +620,7 @@ impl CogniMemServer {
                 content: memory.content.clone(),
                 tier_hint: Some(memory.tier),
             })
+            .await
             .map_err(|e| slm_failed("compress_memory", guard.slm.model_name(), e))?
             .summary;
         if let Some(stored_memory) = guard.graph.get_memory_mut(&memory_id) {
@@ -655,6 +657,7 @@ impl CogniMemServer {
                 slm.as_ref(),
                 &memory.content,
             )
+            .await
             .map_err(|e| slm_failed("distill_skill", slm.model_name(), e))?
             {
                 let skill_compressed = slm
@@ -662,6 +665,7 @@ impl CogniMemServer {
                         content: skill_memory.content.clone(),
                         tier_hint: Some(skill_memory.tier),
                     })
+                    .await
                     .map_err(|e| slm_failed("compress_memory", slm.model_name(), e))?
                     .summary;
                 search.index(skill_memory.id, &skill_compressed, skill_memory.tier);
@@ -780,6 +784,7 @@ impl CogniMemServer {
                     candidates: candidates.clone(),
                     top_n: limit,
                 })
+                .await
                 .map_err(|e| slm_failed("rerank_candidates", guard.slm.model_name(), e))?
                 .ranked_ids;
 
@@ -944,29 +949,26 @@ impl CogniMemServer {
             let conflicts = consolidate(graph, embedder.as_ref());
             let strategy = if args.conflict_strategy.is_some() {
                 strategy
+            } else if let Some(c) = conflicts.first() {
+                let a = graph
+                    .get_memory(&c.memory_id_1)
+                    .map(|m| m.content.as_str())
+                    .unwrap_or("");
+                let b = graph
+                    .get_memory(&c.memory_id_2)
+                    .map(|m| m.content.as_str())
+                    .unwrap_or("");
+                slm.resolve_conflict(ResolveConflictInput {
+                    memory_a_id: c.memory_id_1,
+                    memory_a_content: a.to_string(),
+                    memory_b_id: c.memory_id_2,
+                    memory_b_content: b.to_string(),
+                })
+                .await
+                .map_err(|e| slm_failed("resolve_conflict", slm.model_name(), e))?
+                .action
             } else {
-                let resolved = conflicts.first().map(|c| {
-                    let a = graph
-                        .get_memory(&c.memory_id_1)
-                        .map(|m| m.content.as_str())
-                        .unwrap_or("");
-                    let b = graph
-                        .get_memory(&c.memory_id_2)
-                        .map(|m| m.content.as_str())
-                        .unwrap_or("");
-                    slm.resolve_conflict(ResolveConflictInput {
-                        memory_a_id: c.memory_id_1,
-                        memory_a_content: a.to_string(),
-                        memory_b_id: c.memory_id_2,
-                        memory_b_content: b.to_string(),
-                    })
-                    .map_err(|e| slm_failed("resolve_conflict", slm.model_name(), e))
-                });
-                match resolved {
-                    Some(Ok(action)) => action.action,
-                    Some(Err(err)) => return Err(err),
-                    None => strategy,
-                }
+                strategy
             };
             let resolved = resolve_conflicts(graph, &conflicts, &strategy);
             for id in &resolved {
@@ -1211,6 +1213,7 @@ impl CogniMemServer {
                         .map(|content| (*content).to_string())
                         .collect(),
                 })
+                .await
                 .map_err(|e| slm_failed("complete_pattern", guard.slm.model_name(), e))?
                 .completed_text;
         }
@@ -1229,6 +1232,7 @@ impl CogniMemServer {
             .graph
             .get_by_tier(MemoryTier::Semantic)
             .iter()
+            .filter(|m| m.persona.is_none())
             .map(|m| ExtractPersonaMemoryInput {
                 id: m.id,
                 content: m.content.clone(),
@@ -1241,6 +1245,7 @@ impl CogniMemServer {
                 .extract_persona(ExtractPersonaInput {
                     memories: semantic_memories,
                 })
+                .await
                 .map_err(|e| slm_failed("extract_persona", guard.slm.model_name(), e))?
                 .profiles
         } else {
@@ -1464,6 +1469,7 @@ impl CogniMemServer {
         let input = SummarizeTurnInput { turns };
         let guard = self.state.lock().await;
         let output = guard.slm.summarize_turn(input)
+            .await
             .map_err(|e| slm_failed("summarize_turn", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
@@ -1527,6 +1533,7 @@ impl CogniMemServer {
         };
         let guard = self.state.lock().await;
         let output = guard.slm.summarize_session(input)
+            .await
             .map_err(|e| slm_failed("summarize_session", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
@@ -1547,6 +1554,7 @@ impl CogniMemServer {
         let input = ExtractBestPracticeInput { content, context };
         let guard = self.state.lock().await;
         let output = guard.slm.extract_best_practice(input)
+            .await
             .map_err(|e| slm_failed("extract_best_practice", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
@@ -1601,7 +1609,22 @@ fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64
 }
 
 fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_server::memory::PersonaProfile]) {
+    let persona_ids: std::collections::HashSet<uuid::Uuid> = guard
+        .graph
+        .get_by_tier(MemoryTier::Semantic)
+        .iter()
+        .filter(|m| m.persona.is_some())
+        .map(|m| m.id)
+        .collect();
+
     for profile in profiles {
+        let clean_source_ids: Vec<uuid::Uuid> = profile
+            .source_ids
+            .iter()
+            .filter(|id| !persona_ids.contains(id))
+            .cloned()
+            .collect();
+
         let content = format!("[persona:{}] {}", profile.domain, profile.summary);
         let existing_id = guard
             .graph
@@ -1613,7 +1636,7 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
         if let Some(memory_id) = existing_id {
             if let Some(memory) = guard.graph.get_memory_mut(&memory_id) {
                 memory.content = content.clone();
-                memory.associations = profile.source_ids.clone();
+                memory.associations = clean_source_ids.clone();
                 memory.persona = Some(profile.domain);
                 memory.metadata.importance = profile.confidence.clamp(0.0, 1.0);
                 memory.model.model_name = Some(
@@ -1624,7 +1647,7 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
                         .unwrap_or_else(|| "persona_persist".to_string()),
                 );
                 memory.model.confidence = Some(profile.confidence.clamp(0.0, 1.0));
-                memory.model.provenance_ids = profile.source_ids.clone();
+                memory.model.provenance_ids = clean_source_ids.clone();
             }
             guard.search.remove(&memory_id);
             guard.search.index(memory_id, &content, MemoryTier::Semantic);
@@ -1644,11 +1667,11 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
             profile.confidence.clamp(0.0, 1.0),
             MemoryTier::Semantic.decay_rate(),
         );
-        memory.associations = profile.source_ids.clone();
+        memory.associations = clean_source_ids.clone();
         memory.persona = Some(profile.domain);
         memory.model.model_name = Some("persona_persist".to_string());
         memory.model.confidence = Some(profile.confidence.clamp(0.0, 1.0));
-        memory.model.provenance_ids = profile.source_ids.clone();
+        memory.model.provenance_ids = clean_source_ids.clone();
 
         let memory_id = memory.id;
         let embedding = guard.embedder.embed(&content);

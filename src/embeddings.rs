@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 pub const EMBEDDING_DIM: usize = 256;
 
 /// An embedding engine that converts text into dense vector representations.
-pub trait EmbeddingEngine: Send {
+pub trait EmbeddingEngine: Send + Sync {
     /// Produces a normalized embedding vector for the given text.
     fn embed(&self, text: &str) -> Vec<f32>;
 }

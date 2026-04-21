@@ -99,6 +99,10 @@ pub fn extract_persona(graph: &MemoryGraph) -> Vec<PersonaProfile> {
         std::collections::HashMap::new();
 
     for mem in graph.get_all_memories() {
+        if mem.persona.is_some() {
+            continue;
+        }
+
         let content_lower = mem.content.to_lowercase();
 
         for (domain, keywords) in PERSONA_KEYWORDS {

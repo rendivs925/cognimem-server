@@ -4,7 +4,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 /// A full-text search engine interface for indexing and querying memory content.
-pub trait SearchEngine {
+pub trait SearchEngine: Send {
     /// Indexes a memory for search. Replaces any existing entry with the same ID.
     fn index(&mut self, id: Uuid, content: &str, tier: MemoryTier);
     /// Removes a memory from the search index.

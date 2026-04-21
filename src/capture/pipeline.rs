@@ -256,6 +256,7 @@ impl CapturePipeline {
                 .classify_memory(ClassifyMemoryInput {
                     content: content.clone(),
                 })
+                .await
                 .ok();
 
             let compress_result = guard
@@ -264,6 +265,7 @@ impl CapturePipeline {
                     content: content.clone(),
                     tier_hint: classify_result.as_ref().map(|c| c.tier),
                 })
+                .await
                 .ok();
 
             let tier = classify_result.as_ref().map(|c| c.tier).unwrap_or(MemoryTier::Sensory);

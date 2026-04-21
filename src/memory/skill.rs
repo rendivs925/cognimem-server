@@ -16,7 +16,7 @@ const SKILL_SIMILARITY_THRESHOLD: f32 = 0.65;
 /// If a skill with the same name already exists, returns `None`.
 ///
 /// Returns the newly created Procedural memory unit, or `None` if conditions aren't met.
-pub fn detect_and_create_skill(
+pub async fn detect_and_create_skill(
     graph: &mut MemoryGraph,
     embedder: &dyn EmbeddingEngine,
     search: &mut dyn SearchEngine,
@@ -37,7 +37,7 @@ pub fn detect_and_create_skill(
     let examples: Vec<String> = all_contents.iter().map(|content| (*content).to_string()).collect();
     let distilled = slm.distill_skill(DistillSkillInput {
         examples: examples.clone(),
-    })?;
+    }).await?;
     let skill_name = if distilled.name.trim().is_empty() {
         extract_skill_name(&all_contents)
     } else {
@@ -257,8 +257,8 @@ mod tests {
         assert!(!steps.is_empty());
     }
 
-    #[test]
-    fn test_detect_skill_requires_min_occurrences() {
+    #[tokio::test]
+    async fn test_detect_skill_requires_min_occurrences() {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
         let mut search = Fts5Search::new().unwrap();
@@ -273,6 +273,7 @@ mod tests {
             &slm,
             "deploy rust server",
         )
+        .await
         .unwrap();
         assert!(
             result.is_none(),
@@ -280,8 +281,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_find_skill_returns_procedural_memory() {
+    #[tokio::test]
+    async fn test_find_skill_returns_procedural_memory() {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
         let mut search = Fts5Search::new().unwrap();
@@ -304,6 +305,7 @@ mod tests {
             &slm,
             "deploy rust app version 3",
         )
+        .await
         .unwrap();
         assert!(skill.is_some());
         let skill = skill.unwrap();
