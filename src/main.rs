@@ -731,7 +731,7 @@ impl CogniMemServer {
         let limit = args.limit.unwrap_or(5);
         let min_activation = args.min_activation.unwrap_or(0.0);
         let now = chrono::Utc::now().timestamp();
-        let project_path = args.project_path.clone();
+        let _project_path = args.project_path.clone();
         let scope_filter = args.scope_filter.clone().unwrap_or_else(|| "both".to_string());
 
         let mut guard = self.state.lock().await;
@@ -1428,7 +1428,7 @@ impl CogniMemServer {
             .and_then(|v| v.as_u64())
             .unwrap_or(10) as usize;
 
-        let mut guard = self.state.lock().await;
+        let guard = self.state.lock().await;
 
         let mut available: Vec<serde_json::Value> = Vec::new();
 
@@ -1467,7 +1467,7 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        use cognimem_server::memory::slm_types::{SummarizeTurnInput, SummarizeTurnOutput};
+        use cognimem_server::memory::slm_types::SummarizeTurnInput;
 
         let turns = args.get("turns")
             .and_then(|v| v.as_array())

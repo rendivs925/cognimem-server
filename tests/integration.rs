@@ -5,16 +5,16 @@
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, cosine_similarity, fuse_scores};
 use cognimem_server::memory::CompletePatternArgs;
 use cognimem_server::memory::types::{
-    AssignRoleArgs, AssociateArgs, CaptureEvent, CaptureEventType, ConflictResolution,
+    AssignRoleArgs, AssociateArgs, CaptureEvent, ConflictResolution,
     ExecuteSkillArgs, ForgetArgs, GetObservationsArgs, MemoryScope, MemoryTier, PersonaDomain,
     RecallArgs, RememberArgs, SearchArgs, SessionBuffer, TimelineArgs,
 };
 use cognimem_server::memory::{
-    CognitiveMemoryUnit, DualTimescaleManager, InMemoryStore, MemoryGraph, MemoryStore,
-    NoOpSlm, ProjectModel, ProjectModelManager, SessionContext,
+    CognitiveMemoryUnit, InMemoryStore, MemoryGraph, MemoryStore,
+    NoOpSlm, ProjectModel, ProjectModelManager,
     detect_and_create_skill, detect_convention_patterns, extract_persona,
 };
-use cognimem_server::memory::slm_types::{BestPractice, ExtractBestPracticeInput, SummarizeSessionInput, SummarizeTurnInput, SummarizeTurnOutput, TaskSummary, SlmMetadata};
+use cognimem_server::memory::slm_types::{BestPractice, ExtractBestPracticeInput, SummarizeTurnInput, SummarizeTurnOutput, TaskSummary, SlmMetadata};
 use cognimem_server::search::{Fts5Search, SearchEngine};
 use uuid::Uuid;
 
@@ -606,7 +606,7 @@ fn test_summarize_turn_input_output() {
 
 #[test]
 fn test_summarize_session_input_output() {
-    use cognimem_server::memory::slm_types::{SummarizeSessionOutput, SummarizeSessionInput, TaskSummary};
+    use cognimem_server::memory::slm_types::{SummarizeSessionInput, TaskSummary};
 
     let input = SummarizeSessionInput {
         turns: vec![],
@@ -632,7 +632,7 @@ fn test_summarize_session_input_output() {
 
 #[test]
 fn test_extract_best_practice_input() {
-    use cognimem_server::memory::slm_types::{ExtractBestPracticeInput, BestPractice};
+    use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
 
     let input = ExtractBestPracticeInput {
         content: "We refactored the code to avoid duplication using DRY principle".to_string(),
@@ -799,7 +799,7 @@ fn test_full_remember_with_scope_and_persona() {
 
 #[test]
 fn test_sensory_tier_capacity() {
-    use cognimem_server::memory::types::MemoryMetadata;
+    
 
     let tier = MemoryTier::Sensory;
     let capacity = tier.capacity();
@@ -999,7 +999,7 @@ fn test_session_buffer_should_flush_on_idle() {
 
 #[test]
 fn test_session_buffer_not_flush_immediately() {
-    use chrono::Utc;
+    
 
     let mut buffer = SessionBuffer::new();
     buffer.add_event(CaptureEvent::session_started("/test".to_string()));
