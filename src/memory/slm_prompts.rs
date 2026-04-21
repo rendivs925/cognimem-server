@@ -1,7 +1,8 @@
 use super::slm::DEFAULT_SLM_MODEL;
 use super::slm_types::{
     ClassifyMemoryInput, CompletePatternInput, CompressMemoryInput, DistillSkillInput,
-    ExtractPersonaInput, RerankCandidatesInput, ResolveConflictInput,
+    ExtractBestPracticeInput, ExtractPersonaInput, RerankCandidatesInput, ResolveConflictInput,
+    SummarizeSessionInput, SummarizeTurnInput,
 };
 
 pub fn compress_memory_prompt(input: &CompressMemoryInput) -> String {
@@ -62,7 +63,52 @@ pub fn distill_skill_prompt(input: &DistillSkillInput) -> String {
 pub fn complete_pattern_prompt(input: &CompletePatternInput) -> String {
     let context = input.context.join("\n");
     format!(
-        "You are completing a memory pattern using model {DEFAULT_SLM_MODEL}. Return only valid JSON. Schema: {{\"completed_text\":\"string\",\"evidence\":[\"string\"],\"metadata\":{{\"model\":\"{DEFAULT_SLM_MODEL}\",\"confidence\":0.0}}}}. Cue: {}. Context:\n{}",
-        input.cue, context
+        "You are completing a memory pattern using model {}. Return only valid JSON. Schema: {{\"completed_text\":\"string\",\"evidence\":[\"string\"],\"metadata\":{{\"model\":\"{}\",\"confidence\":0.0}}}}. Cue: {}. Context:\n{}",
+        DEFAULT_SLM_MODEL, DEFAULT_SLM_MODEL, input.cue, context
+    )
+}
+
+pub fn summarize_turn_prompt(input: &SummarizeTurnInput) -> String {
+    let turns = input
+        .turns
+        .iter()
+        .map(|t| format!("Turn {}: {} [tools: {:?}]", t.turn_id, t.content, t.tool_usage))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You are summarizing AI turns using model {}. Return only valid JSON. Schema: {{\"summary\":\"string\",\"key_decisions\":[\"string\"],\"key_actions\":[\"string\"],\"metadata\":{{\"model\":\"{}\",\"confidence\":0.0}}}}. Turns:\n{}",
+        DEFAULT_SLM_MODEL, DEFAULT_SLM_MODEL, turns
+    )
+}
+
+pub fn summarize_session_prompt(input: &SummarizeSessionInput) -> String {
+    let turns = input
+        .turns
+        .iter()
+        .map(|t| format!("Turn {}: {}", t.turn_id, t.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let completed = input
+        .completed_tasks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let open = input
+        .open_tasks
+        .iter()
+        .map(|t| t.title.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "You are summarizing a coding session using model {}. Return only valid JSON. Schema: {{\"summary\":\"string\",\"completed\":[\"string\"],\"unresolved\":[\"string\"],\"next_steps\":[\"string\"],\"handoff_context\":\"string or null\",\"metadata\":{{\"model\":\"{}\",\"confidence\":0.0}}}}. Turns:\n{}. Completed tasks: {}. Open tasks: {}",
+        DEFAULT_SLM_MODEL, DEFAULT_SLM_MODEL, turns, completed, open
+    )
+}
+
+pub fn extract_best_practice_prompt(input: &ExtractBestPracticeInput) -> String {
+    format!(
+        "You are extracting coding best practices using model {}. Return only valid JSON. Schema: {{\"practices\":[{{\"principle\":\"DRY|KISS|SOLID|YAGNI|GuardClauses|DesignPatterns\",\"description\":\"string\",\"applies_to\":[\"string\"],\"example\":\"string or null\"}}],\"confidence\":0.0,\"should_persist\":false,\"metadata\":{{\"model\":\"{}\",\"confidence\":0.0}}}}. Content: {}. Context: {}",
+        DEFAULT_SLM_MODEL, DEFAULT_SLM_MODEL, input.content, input.context.as_deref().unwrap_or("none")
     )
 }

@@ -137,3 +137,70 @@ pub struct CompletePatternOutput {
     pub evidence: Vec<String>,
     pub metadata: SlmMetadata,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnSummary {
+    pub turn_id: Uuid,
+    pub content: String,
+    pub tool_usage: Vec<String>,
+    pub decisions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizeTurnInput {
+    pub turns: Vec<TurnSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizeTurnOutput {
+    pub summary: String,
+    pub key_decisions: Vec<String>,
+    pub key_actions: Vec<String>,
+    pub metadata: SlmMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub task_id: Option<Uuid>,
+    pub title: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizeSessionInput {
+    pub turns: Vec<TurnSummary>,
+    pub completed_tasks: Vec<TaskSummary>,
+    pub open_tasks: Vec<TaskSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizeSessionOutput {
+    pub summary: String,
+    pub completed: Vec<String>,
+    pub unresolved: Vec<String>,
+    pub next_steps: Vec<String>,
+    pub handoff_context: Option<String>,
+    pub metadata: SlmMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractBestPracticeInput {
+    pub content: String,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BestPractice {
+    pub principle: String,
+    pub description: String,
+    pub applies_to: Vec<String>,
+    pub example: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractBestPracticeOutput {
+    pub practices: Vec<BestPractice>,
+    pub confidence: f32,
+    pub should_persist: bool,
+    pub metadata: SlmMetadata,
+}

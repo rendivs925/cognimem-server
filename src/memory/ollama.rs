@@ -1,14 +1,17 @@
 use super::slm::{SlmEngine, SlmError};
 use super::slm_prompts::{
     classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt,
-    distill_skill_prompt, extract_persona_prompt, rerank_candidates_prompt,
-    resolve_conflict_prompt,
+    distill_skill_prompt, extract_best_practice_prompt, extract_persona_prompt,
+    rerank_candidates_prompt, resolve_conflict_prompt, summarize_session_prompt,
+    summarize_turn_prompt,
 };
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, DistillSkillInput, DistillSkillOutput,
-    ExtractPersonaInput, ExtractPersonaOutput, RerankCandidatesInput, RerankCandidatesOutput,
-    ResolveConflictInput, ResolveConflictOutput, SlmMetadata,
+    ExtractBestPracticeInput, ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
+    RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
+    SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
+    SummarizeTurnOutput,
 };
 use crate::memory::DEFAULT_SLM_MODEL;
 use serde::{Deserialize, Serialize};
@@ -274,6 +277,30 @@ impl SlmEngine for OllamaSlm {
                 "completed pattern text was empty".to_string(),
             ));
         }
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Ok(output)
+    }
+
+    fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError> {
+        let prompt = summarize_turn_prompt(&input);
+        let mut output: SummarizeTurnOutput = self.parse_json(self.generate(&prompt, 180))?;
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Ok(output)
+    }
+
+    fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError> {
+        let prompt = summarize_session_prompt(&input);
+        let mut output: SummarizeSessionOutput = self.parse_json(self.generate(&prompt, 240))?;
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Ok(output)
+    }
+
+    fn extract_best_practice(&self, input: ExtractBestPracticeInput) -> Result<ExtractBestPracticeOutput, SlmError> {
+        let prompt = extract_best_practice_prompt(&input);
+        let mut output: ExtractBestPracticeOutput = self.parse_json(self.generate(&prompt, 180))?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)

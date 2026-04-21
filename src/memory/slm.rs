@@ -1,8 +1,10 @@
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, ConflictKind, DistillSkillInput,
-    DistillSkillOutput, ExtractPersonaInput, ExtractPersonaOutput, RerankCandidatesInput,
-    RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput, SlmMetadata,
+    DistillSkillOutput, ExtractBestPracticeInput, ExtractBestPracticeOutput, ExtractPersonaInput,
+    ExtractPersonaOutput, RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput,
+    ResolveConflictOutput, SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput,
+    SummarizeTurnInput, SummarizeTurnOutput,
 };
 use super::types::{ConflictResolution, MemoryTier};
 use std::fmt;
@@ -49,6 +51,12 @@ pub trait SlmEngine: Send {
         &self,
         input: CompletePatternInput,
     ) -> Result<CompletePatternOutput, SlmError>;
+    fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError>;
+    fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError>;
+    fn extract_best_practice(
+        &self,
+        input: ExtractBestPracticeInput,
+    ) -> Result<ExtractBestPracticeOutput, SlmError>;
 }
 
 pub struct NoOpSlm;
@@ -166,6 +174,76 @@ impl SlmEngine for NoOpSlm {
             metadata: SlmMetadata {
                 model: self.model_name().to_string(),
                 confidence: 0.2,
+            },
+        })
+    }
+
+    fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError> {
+        let summary = input.turns.first()
+            .map(|t| t.content.chars().take(200).collect())
+            .unwrap_or_default();
+        Ok(SummarizeTurnOutput {
+            summary,
+            key_decisions: Vec::new(),
+            key_actions: Vec::new(),
+            metadata: SlmMetadata {
+                model: self.model_name().to_string(),
+                confidence: 0.2,
+            },
+        })
+    }
+
+    fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError> {
+        let summary = input.turns.first()
+            .map(|t| t.content.chars().take(200).collect())
+            .unwrap_or_default();
+        Ok(SummarizeSessionOutput {
+            summary,
+            completed: input.completed_tasks.iter().map(|t| t.title.clone()).collect(),
+            unresolved: input.open_tasks.iter().map(|t| t.title.clone()).collect(),
+            next_steps: Vec::new(),
+            handoff_context: None,
+            metadata: SlmMetadata {
+                model: self.model_name().to_string(),
+                confidence: 0.2,
+            },
+        })
+    }
+
+    fn extract_best_practice(
+        &self,
+        input: ExtractBestPracticeInput,
+    ) -> Result<ExtractBestPracticeOutput, SlmError> {
+        let content_lower = input.content.to_lowercase();
+        let mut practices = Vec::new();
+
+        let keywords = [
+            ("DRY", "Don't Repeat Yourself - extract common patterns"),
+            ("KISS", "Keep It Simple - prefer simple over clever"),
+            ("YAGNI", "You Aren't Gonna Need It - don't add features until needed"),
+            ("SOLID", "Single responsibility, Open-closed, Liskov substitution, Interface segregation, Dependency inversion"),
+            ("guard clause", "Reject invalid inputs early at function entrance"),
+        ];
+
+        for (keyword, principle) in keywords {
+            if content_lower.contains(&keyword.to_lowercase()) {
+                practices.push(super::slm_types::BestPractice {
+                    principle: keyword.to_string(),
+                    description: principle.to_string(),
+                    applies_to: vec!["current context".to_string()],
+                    example: None,
+                });
+            }
+        }
+
+        let should_persist = !practices.is_empty();
+        Ok(ExtractBestPracticeOutput {
+            practices,
+            confidence: 0.3,
+            should_persist,
+            metadata: SlmMetadata {
+                model: self.model_name().to_string(),
+                confidence: 0.3,
             },
         })
     }
