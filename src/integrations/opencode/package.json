@@ -1,20 +1,21 @@
 {
   "name": "cognimem-capture",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CogniMem automatic capture plugin for OpenCode",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "dependencies": {
-    "@opencodeai/mcp-client": "^1.0.0"
-  },
   "opencode": {
     "events": {
-      "onSessionCreate": true,
-      "onSessionEnd": true,
-      "onToolExecute": true,
-      "onMessage": true
+      "onSessionCreated": true,
+      "onSessionDeleted": true,
+      "onSessionIdle": true,
+      "onToolExecuteBefore": true,
+      "onToolExecuteAfter": true,
+      "onFileEdited": true,
+      "onMessageUpdated": true,
+      "onPermissionAsked": true
     }
   }
 }

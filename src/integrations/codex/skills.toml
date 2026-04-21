@@ -1,0 +1,12 @@
+# CogniMem capture skill for Codex
+# Install: add to your Codex skills directory
+
+[skill.cognimem-capture]
+name = "cognimem-capture"
+description = "Capture Codex coding events into CogniMem cognitive memory system"
+command = "capture-codex.sh"
+
+[skill.cognimem-capture.events]
+file_write = "file_edited"
+task_complete = "task_completed"
+task_create = "task_created"

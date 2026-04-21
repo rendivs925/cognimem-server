@@ -60,4 +60,7 @@ pub struct Cli {
         help = "Ollama base URL"
     )]
     pub ollama_url: Option<String>,
+
+    #[arg(long, default_value_t = 37778, help = "Port for capture HTTP endpoint")]
+    pub capture_port: u16,
 }

@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "COGNIMEM_URL=${COGNIMEM_CAPTURE_URL:-http://localhost:37778} && curl -sf -X POST \"$COGNIMEM_URL/capture/events\" -H 'Content-Type: application/json' -d \"{\\\"event_type\\\":\\\"session_created\\\",\\\"source\\\":\\\"claude_code\\\",\\\"timestamp\\\":$(date +%s),\\\"session_id\\\":\\\"$CLAUDE_SESSION_ID\\\",\\\"project_path\\\":\\\"$CLAUDE_PROJECT_DIR\\\"}\" || true"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "command": "COGNIMEM_URL=${COGNIMEM_CAPTURE_URL:-http://localhost:37778} && curl -sf -X POST \"$COGNIMEM_URL/capture/events\" -H 'Content-Type: application/json' -d \"{\\\"event_type\\\":\\\"session_deleted\\\",\\\"source\\\":\\\"claude_code\\\",\\\"timestamp\\\":$(date +%s),\\\"session_id\\\":\\\"$CLAUDE_SESSION_ID\\\"}\" || true"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" tool_execute_before"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" tool_execute_after"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" tool_execute_failure"
+      }
+    ],
+    "FileChanged": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" file_edited"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" user_prompt_submitted"
+      }
+    ],
+    "TaskCreated": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" task_created"
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.cognimem/capture-claudecode.sh\" task_completed"
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "COGNIMEM_URL=${COGNIMEM_CAPTURE_URL:-http://localhost:37778} && curl -sf -X POST \"$COGNIMEM_URL/capture/events\" -H 'Content-Type: application/json' -d \"{\\\"event_type\\\":\\\"stop\\\",\\\"source\\\":\\\"claude_code\\\",\\\"timestamp\\\":$(date +%s),\\\"session_id\\\":\\\"$CLAUDE_SESSION_ID\\\"}\" || true"
+      }
+    ]
+  }
+}

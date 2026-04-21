@@ -1359,3 +1359,298 @@ fn test_capture_event_to_memory() {
     let result = ingest.event_to_memory(&event, None);
     assert!(result.is_some());
 }
+
+mod capture_tests {
+    use cognimem_server::capture::{
+        CanonicalEvent, CanonicalEventType, CapturePipeline, EventSource, IngestResult,
+    };
+    use cognimem_server::memory::{InMemoryStore, MemoryGraph};
+    use cognimem_server::state::CogniMemState;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn make_test_state() -> Arc<Mutex<CogniMemState>> {
+        Arc::new(Mutex::new(CogniMemState {
+            graph: MemoryGraph::new(),
+            storage: Box::new(InMemoryStore::new()),
+            search: Box::new(cognimem_server::search::SubstringSearch),
+            embedder: Box::new(cognimem_server::embeddings::HashEmbedding::new()),
+            slm: Box::new(cognimem_server::memory::NoOpSlm),
+            work_claims: HashMap::new(),
+            session_context: None,
+            handoffs: Vec::new(),
+            project_models: cognimem_server::memory::ProjectModelManager::new(),
+        }))
+    }
+
+    fn make_event(event_type: CanonicalEventType) -> CanonicalEvent {
+        CanonicalEvent {
+            event_type,
+            timestamp: chrono::Utc::now().timestamp(),
+            session_id: Some("test-session".into()),
+            project_path: Some("/test/project".into()),
+            agent_id: None,
+            source: EventSource::Opencode,
+            tool_name: None,
+            tool_input: None,
+            tool_output: None,
+            file_path: None,
+            content: Some("test content".into()),
+            success: None,
+            duration_ms: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_capture_single_file_edited() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let event = make_event(CanonicalEventType::FileEdited);
+        let result = pipeline.ingest_batch(vec![event]).await;
+        assert_eq!(result.accepted, 1);
+        assert_eq!(result.stored, 1);
+        assert!(result.errors.is_empty());
+
+        let guard = state.lock().await;
+        assert_eq!(guard.graph.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_capture_suppress_heartbeat_tool() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let mut event = make_event(CanonicalEventType::ToolExecuteAfter);
+        event.tool_name = Some("heartbeat".into());
+        let result = pipeline.ingest_batch(vec![event]).await;
+        assert_eq!(result.suppressed, 1);
+        assert_eq!(result.stored, 0);
+
+        let guard = state.lock().await;
+        assert_eq!(guard.graph.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_capture_tool_aggregation() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let now = chrono::Utc::now().timestamp();
+
+        let mut before = make_event(CanonicalEventType::ToolExecuteBefore);
+        before.tool_name = Some("bash".into());
+        before.session_id = Some("sess1".into());
+        before.timestamp = now - 5;
+
+        let mut after = make_event(CanonicalEventType::ToolExecuteAfter);
+        after.tool_name = Some("bash".into());
+        after.session_id = Some("sess1".into());
+        after.timestamp = now;
+        after.success = Some(true);
+        after.content = Some("ran cargo test".into());
+
+        let result = pipeline.ingest_batch(vec![before, after]).await;
+        assert_eq!(result.accepted, 2);
+        assert_eq!(result.stored, 1);
+
+        let guard = state.lock().await;
+        assert_eq!(guard.graph.len(), 1);
+        let memories = guard.graph.get_all_memories();
+        let content = &memories[0].content;
+        assert!(content.contains("bash"));
+        assert!(content.contains("ran cargo test"));
+    }
+
+    #[tokio::test]
+    async fn test_capture_batch_mixed_events() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+
+        let mut suppressed = make_event(CanonicalEventType::ToolExecuteAfter);
+        suppressed.tool_name = Some("ping".into());
+
+        let events = vec![
+            make_event(CanonicalEventType::SessionCreated),
+            make_event(CanonicalEventType::FileEdited),
+            make_event(CanonicalEventType::FileCreated),
+            suppressed,
+        ];
+
+        let result = pipeline.ingest_batch(events).await;
+        assert_eq!(result.accepted, 4);
+        assert_eq!(result.stored, 3);
+        assert_eq!(result.suppressed, 1);
+
+        let guard = state.lock().await;
+        assert_eq!(guard.graph.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_capture_validation_rejects_future() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let mut event = make_event(CanonicalEventType::FileEdited);
+        event.timestamp = chrono::Utc::now().timestamp() + 300;
+        let result = pipeline.ingest_batch(vec![event]).await;
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("future"));
+    }
+
+    #[tokio::test]
+    async fn test_capture_slm_metadata_stored() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let event = make_event(CanonicalEventType::FileEdited);
+        pipeline.ingest_batch(vec![event]).await;
+
+        let guard = state.lock().await;
+        let memories = guard.graph.get_all_memories();
+        let mem = &memories[0];
+        assert!(mem.model.model_name.is_some());
+        assert!(mem.model.compressed_content.is_some() || mem.model.suggested_tier.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_capture_deduplication() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let event = make_event(CanonicalEventType::FileEdited);
+        let result = pipeline.ingest_batch(vec![event.clone(), event]).await;
+        assert!(result.stored >= 1);
+        assert!(result.suppressed >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_capture_noop_slm_default_tier() {
+        let state = make_test_state();
+        let mut pipeline = CapturePipeline::new(state.clone());
+        let mut event = make_event(CanonicalEventType::SessionIdle);
+        event.content = Some("idle with context".into());
+        pipeline.ingest_batch(vec![event]).await;
+
+        let guard = state.lock().await;
+        let memories = guard.graph.get_all_memories();
+        assert!(!memories.is_empty());
+        // NoOpSlm defaults to Episodic tier; when real SLM is available it will classify properly
+        assert_eq!(memories[0].tier, cognimem_server::memory::types::MemoryTier::Episodic);
+    }
+
+    #[tokio::test]
+    async fn test_capture_axum_health() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_test_state();
+        let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state)));
+        let app = cognimem_server::capture::create_router(
+            cognimem_server::capture::AppState { pipeline },
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/capture/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_capture_axum_ingest_single() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_test_state();
+        let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
+        let app = cognimem_server::capture::create_router(
+            cognimem_server::capture::AppState { pipeline },
+        );
+
+        let event = make_event(CanonicalEventType::FileEdited);
+        let body = serde_json::to_vec(&event).unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/capture/events")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let guard = state.lock().await;
+        assert_eq!(guard.graph.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_capture_axum_ingest_batch() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_test_state();
+        let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
+        let app = cognimem_server::capture::create_router(
+            cognimem_server::capture::AppState { pipeline },
+        );
+
+        let events = vec![
+            make_event(CanonicalEventType::SessionCreated),
+            make_event(CanonicalEventType::FileEdited),
+        ];
+        let body = serde_json::to_vec(&events).unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/capture/events/batch")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let guard = state.lock().await;
+        assert_eq!(guard.graph.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_capture_axum_stats() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = make_test_state();
+        let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state)));
+        let app = cognimem_server::capture::create_router(
+            cognimem_server::capture::AppState { pipeline },
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/capture/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}

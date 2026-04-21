@@ -1,19 +1,18 @@
 mod config;
 
-use std::collections::HashMap;
-
 use clap::Parser;
-use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
+use cognimem_server::capture::{CapturePipeline, start_capture_server};
+use cognimem_server::embeddings::fuse_scores;
 use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus, ClaimType,
     CognitiveMemoryUnit, ClassifyMemoryInput, CompletePatternArgs, CompletePatternInput,
     CompletePatternResult, CompressMemoryInput, ExecuteSkillArgs, ExecuteSkillResult,
     ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
-    GetObservationsArgs, HandoffSummary, InMemoryStore, MemoryScope, MemoryStore, MemorySummary,
-    MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
-    RememberArgs, RememberResult, ProjectModelManager, RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput,
-    RocksDbStore, SearchArgs, SearchResult, SearchResults, SessionContext, SkillMemory,
-    SlmEngine, SlmError, TimelineArgs, TimelineResult, WorkClaim,
+    GetObservationsArgs, InMemoryStore, MemoryScope, MemoryStore, MemorySummary,
+    MemoryTier, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
+    RememberArgs, RememberResult, RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput,
+    RocksDbStore, SearchArgs, SearchResult, SearchResults, SkillMemory,
+    SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
@@ -26,7 +25,7 @@ use cognimem_server::memory::{
 use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
 };
-use cognimem_server::search::{Fts5Search, SearchEngine};
+use cognimem_server::state::CogniMemState;
 use config::Cli;
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -45,69 +44,6 @@ use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tracing::error;
-
-struct CogniMemState {
-    graph: MemoryGraph,
-    storage: Box<dyn MemoryStore>,
-    search: Box<dyn SearchEngine + Send>,
-    embedder: Box<dyn EmbeddingEngine + Send>,
-    slm: Box<dyn SlmEngine + Send>,
-    work_claims: HashMap<uuid::Uuid, WorkClaim>,
-    session_context: Option<SessionContext>,
-    handoffs: Vec<HandoffSummary>,
-    project_models: ProjectModelManager,
-}
-
-impl CogniMemState {
-    fn new(storage: Box<dyn MemoryStore>, ollama_model: Option<String>, ollama_url: Option<String>) -> Self {
-        let mut graph = MemoryGraph::new();
-        let mut search: Box<dyn SearchEngine + Send> = match Fts5Search::new() {
-            Ok(fts) => Box::new(fts),
-            Err(e) => {
-                tracing::warn!("Failed to initialize FTS5 search, falling back to substring: {e}");
-                Box::new(cognimem_server::search::SubstringSearch)
-            }
-        };
-        let embedder: Box<dyn EmbeddingEngine + Send> = Box::new(HashEmbedding::new());
-
-        let slm: Box<dyn SlmEngine + Send> = if let Some(model) = ollama_model {
-            let ollama = OllamaSlm::new(Some(model), ollama_url);
-            if ollama.check_available() {
-                tracing::info!("Ollama SLM engine initialized successfully");
-                Box::new(ollama)
-            } else {
-                tracing::warn!("Ollama not available, falling back to NoOpSlm");
-                Box::new(NoOpSlm)
-            }
-        } else {
-            Box::new(NoOpSlm)
-        };
-        let memories = match storage.load_all() {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!("Failed to load memories from storage: {e}");
-                Vec::new()
-            }
-        };
-        for m in &memories {
-            let emb = embedder.embed(&m.content);
-            graph.add_memory(m.clone());
-            graph.set_embedding(m.id, emb);
-            search.index(m.id, &m.content, m.tier);
-        }
-        Self {
-            graph,
-            storage,
-            search,
-            embedder,
-            slm,
-            work_claims: HashMap::new(),
-            session_context: None,
-            handoffs: Vec::new(),
-            project_models: ProjectModelManager::new(),
-        }
-    }
-}
 
 #[derive(Clone)]
 struct CogniMemServer {
@@ -1837,6 +1773,9 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         set_memory_count(guard.graph.len() as u64);
     }
     let server = CogniMemServer::new(state.clone());
+
+    let capture_pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
+    tokio::spawn(start_capture_server(capture_pipeline, cli.capture_port));
 
     tokio::spawn(decay_task(
         state.clone(),
