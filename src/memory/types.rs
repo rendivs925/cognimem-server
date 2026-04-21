@@ -136,7 +136,7 @@ pub struct RaciRoles {
 }
 
 /// Metadata tracking activation dynamics and access patterns for a memory.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryMetadata {
     /// Unix timestamp when the memory was created.
     pub created_at: i64,
@@ -150,12 +150,9 @@ pub struct MemoryMetadata {
     pub base_activation: f32,
     /// Exponential decay rate controlling activation falloff.
     pub decay_rate: f32,
-    /// Rehearsal timestamps used for ACT-R style base-level activation.
+    /// Full rehearsal history used for ACT-R style base-level activation.
     #[serde(default)]
-    pub rehearsal_timestamps: [i64; 8],
-    /// Number of valid entries in `rehearsal_timestamps`.
-    #[serde(default)]
-    pub rehearsal_count: u8,
+    pub rehearsal_history: Vec<i64>,
 }
 
 impl Default for MemoryMetadata {
@@ -178,23 +175,20 @@ impl MemoryMetadata {
             importance: importance.clamp(0.0, 1.0),
             base_activation: 1.0,
             decay_rate,
-            rehearsal_timestamps: {
-                let mut timestamps = [0; 8];
-                timestamps[0] = now;
-                timestamps
-            },
-            rehearsal_count: 1,
+            rehearsal_history: vec![now],
         }
     }
 
     /// Recomputes `base_activation` based on elapsed time since last access.
     ///
-    /// Uses a power-law decay model: `ln(access_count * (elapsed+1)^(-decay_rate))`,
-    /// with a floor of 0.01.
+    /// Uses an ACT-R style base-level activation model:
+    /// `B = ln(sum((t_now - t_i + 1)^-d))`, with a floor of 0.01.
     pub fn update_activation(&mut self, now: i64) {
-        let count = self.rehearsal_count.max(1) as usize;
+        if self.rehearsal_history.is_empty() {
+            self.rehearsal_history.push(self.last_accessed.max(self.created_at));
+        }
         let decay = self.decay_rate as f64;
-        let summed: f64 = self.rehearsal_timestamps[..count]
+        let summed: f64 = self.rehearsal_history
             .iter()
             .map(|&timestamp| {
                 let elapsed = (now - timestamp).max(0) as f64 + 1.0;
@@ -208,16 +202,7 @@ impl MemoryMetadata {
     pub fn record_rehearsal(&mut self, now: i64) {
         self.last_accessed = now;
         self.access_count = self.access_count.saturating_add(1);
-
-        if self.rehearsal_count as usize >= self.rehearsal_timestamps.len() {
-            self.rehearsal_timestamps.rotate_left(1);
-            let last = self.rehearsal_timestamps.len() - 1;
-            self.rehearsal_timestamps[last] = now;
-        } else {
-            self.rehearsal_timestamps[self.rehearsal_count as usize] = now;
-            self.rehearsal_count += 1;
-        }
-
+        self.rehearsal_history.push(now);
         self.update_activation(now);
     }
 }

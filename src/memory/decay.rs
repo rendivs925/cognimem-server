@@ -123,9 +123,10 @@ mod tests {
     fn test_decay_updates_activation() {
         let mut graph = MemoryGraph::new();
         let id = graph.add_memory(make_memory(MemoryTier::Episodic, 1.0));
-        // Simulate time passing by modifying last_accessed
+        // Simulate time passing by modifying the initial rehearsal timestamp.
         if let Some(mem) = graph.get_memory_mut(&id) {
             mem.metadata.last_accessed = Utc::now().timestamp() - 3600; // 1 hour ago
+            mem.metadata.rehearsal_history = vec![mem.metadata.last_accessed];
         }
         apply_decay_to_all(&mut graph);
         // Activation should have decreased from 1.0
