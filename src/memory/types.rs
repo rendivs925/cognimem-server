@@ -150,6 +150,12 @@ pub struct MemoryMetadata {
     pub base_activation: f32,
     /// Exponential decay rate controlling activation falloff.
     pub decay_rate: f32,
+    /// Rehearsal timestamps used for ACT-R style base-level activation.
+    #[serde(default)]
+    pub rehearsal_timestamps: [i64; 8],
+    /// Number of valid entries in `rehearsal_timestamps`.
+    #[serde(default)]
+    pub rehearsal_count: u8,
 }
 
 impl Default for MemoryMetadata {
@@ -172,6 +178,12 @@ impl MemoryMetadata {
             importance: importance.clamp(0.0, 1.0),
             base_activation: 1.0,
             decay_rate,
+            rehearsal_timestamps: {
+                let mut timestamps = [0; 8];
+                timestamps[0] = now;
+                timestamps
+            },
+            rehearsal_count: 1,
         }
     }
 
@@ -180,10 +192,33 @@ impl MemoryMetadata {
     /// Uses a power-law decay model: `ln(access_count * (elapsed+1)^(-decay_rate))`,
     /// with a floor of 0.01.
     pub fn update_activation(&mut self, now: i64) {
-        let elapsed_secs = (now - self.last_accessed) as f64;
-        let decayed = (elapsed_secs + 1.0).powf(-self.decay_rate as f64);
-        let new_activation = (self.access_count as f64 * decayed).ln();
+        let count = self.rehearsal_count.max(1) as usize;
+        let decay = self.decay_rate as f64;
+        let summed: f64 = self.rehearsal_timestamps[..count]
+            .iter()
+            .map(|&timestamp| {
+                let elapsed = (now - timestamp).max(0) as f64 + 1.0;
+                elapsed.powf(-decay)
+            })
+            .sum();
+        let new_activation = summed.ln();
         self.base_activation = new_activation.max(0.01) as f32;
+    }
+
+    pub fn record_rehearsal(&mut self, now: i64) {
+        self.last_accessed = now;
+        self.access_count = self.access_count.saturating_add(1);
+
+        if self.rehearsal_count as usize >= self.rehearsal_timestamps.len() {
+            self.rehearsal_timestamps.rotate_left(1);
+            let last = self.rehearsal_timestamps.len() - 1;
+            self.rehearsal_timestamps[last] = now;
+        } else {
+            self.rehearsal_timestamps[self.rehearsal_count as usize] = now;
+            self.rehearsal_count += 1;
+        }
+
+        self.update_activation(now);
     }
 }
 
@@ -602,6 +637,10 @@ pub struct ExecuteSkillResult {
     pub steps: Vec<String>,
     /// Number of source memories that contributed to this skill.
     pub source_count: usize,
+    /// Whether the skill was executed successfully.
+    pub executed: bool,
+    /// Exit code returned by the sandboxed skill runtime.
+    pub exit_code: i32,
 }
 
 /// A procedural skill distilled from repeated patterns across memories.

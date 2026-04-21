@@ -10,8 +10,8 @@ use cognimem_server::memory::types::{
     TimelineArgs,
 };
 use cognimem_server::memory::{
-    CognitiveMemoryUnit, InMemoryStore, MemoryGraph, MemoryStore, detect_and_create_skill,
-    extract_persona,
+    CognitiveMemoryUnit, InMemoryStore, MemoryGraph, MemoryStore, NoOpSlm,
+    detect_and_create_skill, extract_persona,
 };
 use cognimem_server::search::{Fts5Search, SearchEngine};
 
@@ -274,9 +274,10 @@ fn test_skill_detection_api_exists() {
     let mut graph = MemoryGraph::new();
     let embedder = HashEmbedding::new();
     let mut search = Fts5Search::new().expect("FTS5 init");
+    let slm = NoOpSlm;
 
     // Check that detect_and_create_skill is callable
-    _ = detect_and_create_skill(&mut graph, &embedder, &mut search, "test query");
+    _ = detect_and_create_skill(&mut graph, &embedder, &mut search, &slm, "test query");
 }
 
 #[test]

@@ -1,8 +1,11 @@
 use super::graph::MemoryGraph;
+use super::slm::{SlmEngine, SlmError};
+use super::slm_types::DistillSkillInput;
 use super::types::{CognitiveMemoryUnit, MemoryTier, SkillMemory};
 use crate::embeddings::EmbeddingEngine;
 use crate::search::SearchEngine;
 use tracing::error;
+use wasmtime::{Engine, Module, Store, TypedFunc};
 
 const MIN_PATTERN_OCCURRENCES: usize = 3;
 const SKILL_SIMILARITY_THRESHOLD: f32 = 0.65;
@@ -17,11 +20,12 @@ pub fn detect_and_create_skill(
     graph: &mut MemoryGraph,
     embedder: &dyn EmbeddingEngine,
     search: &mut dyn SearchEngine,
+    slm: &dyn SlmEngine,
     new_content: &str,
-) -> Option<CognitiveMemoryUnit> {
+) -> Result<Option<CognitiveMemoryUnit>, SlmError> {
     let candidates = find_similar_memories(graph, embedder, new_content);
     if candidates.len() < MIN_PATTERN_OCCURRENCES - 1 {
-        return None;
+        return Ok(None);
     }
 
     let all_contents: Vec<&str> = candidates
@@ -30,12 +34,28 @@ pub fn detect_and_create_skill(
         .chain(std::iter::once(new_content))
         .collect();
 
-    let skill_name = extract_skill_name(&all_contents);
-    let steps = distill_steps(&all_contents);
-    let pattern = extract_pattern(&all_contents);
+    let examples: Vec<String> = all_contents.iter().map(|content| (*content).to_string()).collect();
+    let distilled = slm.distill_skill(DistillSkillInput {
+        examples: examples.clone(),
+    })?;
+    let skill_name = if distilled.name.trim().is_empty() {
+        extract_skill_name(&all_contents)
+    } else {
+        distilled.name
+    };
+    let steps = if distilled.steps.is_empty() {
+        distill_steps(&all_contents)
+    } else {
+        distilled.steps
+    };
+    let pattern = if distilled.pattern.trim().is_empty() {
+        extract_pattern(&all_contents)
+    } else {
+        distilled.pattern
+    };
 
     if is_skill_already_exists(graph, &skill_name) {
-        return None;
+        return Ok(None);
     }
 
     let source_ids: Vec<uuid::Uuid> = candidates.iter().map(|(m, _)| m.id).collect();
@@ -64,7 +84,7 @@ pub fn detect_and_create_skill(
     graph.set_embedding(id, emb);
     search.index(id, &memory.content, memory.tier);
 
-    Some(memory)
+    Ok(Some(memory))
 }
 
 /// Finds a skill memory by name, searching Procedural-tier memories for a `[skill]` prefix match.
@@ -82,6 +102,24 @@ pub fn find_skill(graph: &MemoryGraph, name: &str) -> Option<CognitiveMemoryUnit
                 || lower.contains(&format!("[skill] {}", name.to_lowercase()))
         })
         .cloned()
+}
+
+pub fn execute_skill(skill: &SkillMemory) -> Result<i32, String> {
+    let step_count = i32::try_from(skill.steps.len()).map_err(|e| e.to_string())?;
+    let wat = format!(
+        r#"(module
+            (func (export "run") (result i32)
+                i32.const {step_count}))"#
+    );
+    let wasm = wat::parse_str(wat).map_err(|e| e.to_string())?;
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).map_err(|e| e.to_string())?;
+    let mut store = Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).map_err(|e| e.to_string())?;
+    let run: TypedFunc<(), i32> = instance
+        .get_typed_func(&mut store, "run")
+        .map_err(|e| e.to_string())?;
+    run.call(&mut store, ()).map_err(|e| e.to_string())
 }
 
 fn find_similar_memories<'a>(
@@ -185,6 +223,7 @@ fn is_skill_already_exists(graph: &MemoryGraph, name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::embeddings::HashEmbedding;
+    use crate::memory::NoOpSlm;
     use crate::search::Fts5Search;
 
     fn make_memory(content: &str, tier: MemoryTier) -> CognitiveMemoryUnit {
@@ -223,11 +262,18 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
         let mut search = Fts5Search::new().unwrap();
+        let slm = NoOpSlm;
 
         graph.add_memory(make_memory("deploy rust app", MemoryTier::Episodic));
 
-        let result =
-            detect_and_create_skill(&mut graph, &embedder, &mut search, "deploy rust server");
+        let result = detect_and_create_skill(
+            &mut graph,
+            &embedder,
+            &mut search,
+            &slm,
+            "deploy rust server",
+        )
+        .unwrap();
         assert!(
             result.is_none(),
             "should not create skill with only 1 similar memory"
@@ -239,6 +285,7 @@ mod tests {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
         let mut search = Fts5Search::new().unwrap();
+        let slm = NoOpSlm;
 
         for i in 0..3 {
             let mem = make_memory(
@@ -254,8 +301,10 @@ mod tests {
             &mut graph,
             &embedder,
             &mut search,
+            &slm,
             "deploy rust app version 3",
-        );
+        )
+        .unwrap();
         assert!(skill.is_some());
         let skill = skill.unwrap();
         assert_eq!(skill.tier, MemoryTier::Procedural);

@@ -19,6 +19,13 @@ pub struct Cli {
 
     #[arg(
         long,
+        default_value_t = 900,
+        help = "Consolidation interval in seconds"
+    )]
+    pub consolidation_interval_secs: u64,
+
+    #[arg(
+        long,
         default_value_t = 0.01,
         help = "Activation threshold below which memories are pruned"
     )]

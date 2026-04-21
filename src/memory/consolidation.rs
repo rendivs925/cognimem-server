@@ -33,8 +33,8 @@ fn replay_recent(graph: &mut MemoryGraph) {
 
     for id in &recent {
         if let Some(mem) = graph.get_memory_mut(id) {
+            mem.metadata.record_rehearsal(now);
             mem.metadata.base_activation = (mem.metadata.base_activation + REPLAY_BOOST).min(1.0);
-            mem.metadata.access_count += 1;
         }
 
         let associated: Vec<(uuid::Uuid, f32)> = graph.get_associations(id);

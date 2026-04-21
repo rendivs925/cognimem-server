@@ -19,7 +19,8 @@ use cognimem_server::memory::{
     prune_below_threshold, resolve_conflicts,
 };
 use cognimem_server::memory::{
-    complete_pattern, detect_and_create_skill, extract_persona, find_skill, strengthen_co_activated,
+    complete_pattern, detect_and_create_skill, execute_skill as run_skill, extract_persona,
+    find_skill, strengthen_co_activated,
 };
 use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
@@ -577,8 +578,14 @@ impl CogniMemServer {
                 embedder,
                 slm,
             } = &mut *guard;
-            if let Some(skill_memory) =
-                detect_and_create_skill(graph, embedder.as_ref(), &mut **search, &memory.content)
+            if let Some(skill_memory) = detect_and_create_skill(
+                graph,
+                embedder.as_ref(),
+                &mut **search,
+                slm.as_ref(),
+                &memory.content,
+            )
+            .map_err(|e| slm_failed("distill_skill", slm.model_name(), e))?
             {
                 let skill_compressed = slm
                     .compress_memory(CompressMemoryInput {
@@ -1067,12 +1074,17 @@ impl CogniMemServer {
             .and_then(|(_, json)| serde_json::from_str(json).ok())
             .ok_or_else(|| invalid_params("Skill memory is malformed"))?;
 
+        let exit_code = run_skill(&skill)
+            .map_err(|e| invalid_params(&format!("Skill execution failed: {e}")))?;
+
         Ok(success_json(&ExecuteSkillResult {
             skill_id: memory.id,
             skill_name: skill.name,
             pattern: skill.pattern,
             steps: skill.steps,
             source_count: skill.source_ids.len(),
+            executed: true,
+            exit_code,
         }))
     }
 
@@ -1125,7 +1137,7 @@ impl CogniMemServer {
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let _ = parse_args::<serde_json::Map<String, serde_json::Value>>(args)?;
-        let guard = self.state.lock().await;
+        let mut guard = self.state.lock().await;
 
         let semantic_memories: Vec<ExtractPersonaMemoryInput> = guard
             .graph
@@ -1148,6 +1160,8 @@ impl CogniMemServer {
         } else {
             extract_persona(&guard.graph)
         };
+
+        persist_persona_profiles(&mut guard, &profiles);
 
         Ok(success_json(&ExtractPersonaResult { profiles }))
     }
@@ -1211,14 +1225,73 @@ fn expand_with_associations<'a>(
 fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64) {
     for id in ids {
         if let Some(mem) = guard.graph.get_memory_mut(id) {
-            mem.metadata.access_count += 1;
-            mem.metadata.last_accessed = now;
-            mem.metadata.update_activation(now);
+            mem.metadata.record_rehearsal(now);
         }
         if let Some(mem) = guard.graph.get_memory(id)
             && let Err(e) = guard.storage.save(mem)
         {
             error!("Failed to persist activation update for {id}: {e}");
+        }
+    }
+}
+
+fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_server::memory::PersonaProfile]) {
+    for profile in profiles {
+        let content = format!("[persona:{}] {}", profile.domain, profile.summary);
+        let existing_id = guard
+            .graph
+            .get_by_tier(MemoryTier::Semantic)
+            .into_iter()
+            .find(|memory| memory.persona == Some(profile.domain))
+            .map(|memory| memory.id);
+
+        if let Some(memory_id) = existing_id {
+            if let Some(memory) = guard.graph.get_memory_mut(&memory_id) {
+                memory.content = content.clone();
+                memory.associations = profile.source_ids.clone();
+                memory.persona = Some(profile.domain);
+                memory.metadata.importance = profile.confidence.clamp(0.0, 1.0);
+                memory.model.model_name = Some(
+                    memory
+                        .model
+                        .model_name
+                        .clone()
+                        .unwrap_or_else(|| "persona_persist".to_string()),
+                );
+                memory.model.confidence = Some(profile.confidence.clamp(0.0, 1.0));
+                memory.model.provenance_ids = profile.source_ids.clone();
+            }
+            guard.search.remove(&memory_id);
+            guard.search.index(memory_id, &content, MemoryTier::Semantic);
+            let embedding = guard.embedder.embed(&content);
+            guard.graph.set_embedding(memory_id, embedding);
+            if let Some(memory) = guard.graph.get_memory(&memory_id)
+                && let Err(e) = guard.storage.save(memory)
+            {
+                error!("Failed to persist persona memory {}: {e}", memory_id);
+            }
+            continue;
+        }
+
+        let mut memory = CognitiveMemoryUnit::new(
+            content.clone(),
+            MemoryTier::Semantic,
+            profile.confidence.clamp(0.0, 1.0),
+            MemoryTier::Semantic.decay_rate(),
+        );
+        memory.associations = profile.source_ids.clone();
+        memory.persona = Some(profile.domain);
+        memory.model.model_name = Some("persona_persist".to_string());
+        memory.model.confidence = Some(profile.confidence.clamp(0.0, 1.0));
+        memory.model.provenance_ids = profile.source_ids.clone();
+
+        let memory_id = memory.id;
+        let embedding = guard.embedder.embed(&content);
+        guard.graph.add_memory(memory.clone());
+        guard.graph.set_embedding(memory_id, embedding);
+        guard.search.index(memory_id, &content, MemoryTier::Semantic);
+        if let Err(e) = guard.storage.save(&memory) {
+            error!("Failed to persist persona memory {}: {e}", memory_id);
         }
     }
 }
@@ -1246,6 +1319,64 @@ async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_
             }
             tracing::info!(
                 "Pruned {} memories below activation threshold",
+                pruned.len()
+            );
+        }
+    }
+}
+
+async fn consolidation_task(
+    state: Arc<Mutex<CogniMemState>>,
+    interval: Duration,
+    prune_threshold: f32,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let mut guard = state.lock().await;
+        let CogniMemState {
+            graph,
+            storage,
+            search,
+            embedder,
+            ..
+        } = &mut *guard;
+
+        let conflicts = consolidate(graph, embedder.as_ref());
+        let resolved = resolve_conflicts(
+            graph,
+            &conflicts,
+            &cognimem_server::memory::ConflictResolution::LatestWins,
+        );
+        for id in &resolved {
+            search.remove(id);
+            if let Err(e) = storage.delete(id) {
+                error!("Failed to delete consolidated memory {}: {e}", id);
+            }
+        }
+
+        let promoted = promote_memories(graph);
+        let pruned = prune_below_threshold(graph, prune_threshold);
+        for id in &pruned {
+            search.remove(id);
+            if let Err(e) = storage.delete(id) {
+                error!("Failed to delete pruned memory {}: {e}", id);
+            }
+        }
+
+        for memory in graph.get_all_memories() {
+            if let Err(e) = storage.save(memory) {
+                error!("Failed to persist consolidated memory {}: {e}", memory.id);
+            }
+        }
+
+        set_memory_count(graph.len() as u64);
+        if !conflicts.is_empty() || promoted > 0 || !pruned.is_empty() {
+            tracing::info!(
+                "Consolidation cycle complete: conflicts={}, resolved={}, promoted={}, pruned={}",
+                conflicts.len(),
+                resolved.len(),
+                promoted,
                 pruned.len()
             );
         }
@@ -1310,8 +1441,13 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let server = CogniMemServer::new(state.clone());
 
     tokio::spawn(decay_task(
-        state,
+        state.clone(),
         Duration::from_secs(cli.decay_interval_secs),
+        cli.prune_threshold,
+    ));
+    tokio::spawn(consolidation_task(
+        state,
+        Duration::from_secs(cli.consolidation_interval_secs),
         cli.prune_threshold,
     ));
 
@@ -1396,6 +1532,8 @@ fn spawn_daemon(cli: &Cli, socket_path: &Path) -> Result<(), Box<dyn std::error:
         .arg(&cli.data_path)
         .arg("--decay-interval-secs")
         .arg(cli.decay_interval_secs.to_string())
+        .arg("--consolidation-interval-secs")
+        .arg(cli.consolidation_interval_secs.to_string())
         .arg("--prune-threshold")
         .arg(cli.prune_threshold.to_string())
         .arg("--storage")
