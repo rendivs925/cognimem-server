@@ -1879,10 +1879,18 @@ fn spawn_daemon(cli: &Cli, socket_path: &Path) -> Result<(), Box<dyn std::error:
         .arg(cli.metrics_port.to_string())
         .arg("--socket-path")
         .arg(socket_path)
+        .arg("--capture-port")
+        .arg(cli.capture_port.to_string());
+    if let Some(ref model) = cli.ollama_model {
+        command.arg("--ollama-model").arg(model);
+    }
+    if let Some(ref url) = cli.ollama_url {
+        command.arg("--ollama-url").arg(url);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-
     command.spawn()?;
     Ok(())
 }

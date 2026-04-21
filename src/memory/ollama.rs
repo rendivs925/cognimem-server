@@ -103,12 +103,60 @@ impl OllamaSlm {
         }
     }
 
+    fn extract_json(raw: &str) -> String {
+        let mut s = raw.to_string();
+        while let Some(start) = s.find("<think>") {
+            let end = s.find("</think>").unwrap_or(s.len());
+            s.replace_range(start..end.min(s.len()).min(start + "</think>".len()), "");
+        }
+        while let Some(start) = s.find("```json") {
+            let after_fence = start + 7;
+            if let Some(end) = s[after_fence..].find("```") {
+                let json_block = s[after_fence..after_fence + end].trim().to_string();
+                return json_block;
+            }
+        }
+        while let Some(start) = s.find("```") {
+            let after_fence = start + 3;
+            if let Some(end) = s[after_fence..].find("```") {
+                let block = s[after_fence..after_fence + end].trim().to_string();
+                if block.starts_with('{') || block.starts_with('[') {
+                    return block;
+                }
+            }
+            break;
+        }
+        if let Some(first_brace) = s.find('{') {
+            if let Some(last_brace) = s.rfind('}') {
+                if last_brace > first_brace {
+                    return s[first_brace..=last_brace].to_string();
+                }
+            }
+        }
+        if let Some(first_bracket) = s.find('[') {
+            if let Some(last_bracket) = s.rfind(']') {
+                if last_bracket > first_bracket {
+                    return s[first_bracket..=last_bracket].to_string();
+                }
+            }
+        }
+        s
+    }
+
     fn parse_json<T: serde::de::DeserializeOwned>(
         &self,
         response: Result<String, SlmError>,
     ) -> Result<T, SlmError> {
         let response = response?;
-        serde_json::from_str(&response).map_err(|e| SlmError::InvalidResponse(e.to_string()))
+        let cleaned = Self::extract_json(&response);
+        serde_json::from_str(&cleaned).map_err(|e| {
+            tracing::warn!(
+                "Ollama JSON parse failed: {}. Raw (first 200): {:?}",
+                e,
+                &response[..response.len().min(200)]
+            );
+            SlmError::InvalidResponse(e.to_string())
+        })
     }
 
     fn clamp_confidence(confidence: f32) -> f32 {
@@ -316,5 +364,44 @@ mod tests {
         let config = OllamaConfig::default();
         assert_eq!(config.model, DEFAULT_SLM_MODEL);
         assert_eq!(config.base_url, "http://localhost:11434");
+    }
+
+    #[test]
+    fn test_extract_json_pure() {
+        let raw = r#"{"summary":"test","metadata":{"model":"qwen2.5-coder:3b","confidence":0.5}}"#;
+        assert_eq!(OllamaSlm::extract_json(raw), raw);
+    }
+
+    #[test]
+    fn test_extract_json_with_thinking() {
+        let raw = r#"<tool_call>thinking
+Let me analyze this content
+{"summary":"test","metadata":{"model":"qwen2.5-coder:3b","confidence":0.5}}"#;
+        let extracted = OllamaSlm::extract_json(raw);
+        assert!(extracted.starts_with('{'));
+        assert!(extracted.contains("summary"));
+    }
+
+    #[test]
+    fn test_extract_json_with_markdown_fence() {
+        let raw = "```json\n{\"summary\":\"test\",\"metadata\":{\"model\":\"qwen2.5-coder:3b\",\"confidence\":0.5}}\n```";
+        let extracted = OllamaSlm::extract_json(raw);
+        assert!(extracted.starts_with('{'));
+        assert!(extracted.contains("summary"));
+    }
+
+    #[test]
+    fn test_extract_json_with_prefix_text() {
+        let raw = "Here is the result:\n{\"summary\":\"test\",\"metadata\":{\"model\":\"qwen2.5-coder:3b\",\"confidence\":0.5}}\nDone.";
+        let extracted = OllamaSlm::extract_json(raw);
+        assert!(extracted.starts_with('{'));
+        assert!(extracted.ends_with('}'));
+    }
+
+    #[test]
+    fn test_extract_json_nested_braces() {
+        let raw = "Some text {\"a\":{\"b\":1},\"c\":2} more text";
+        let extracted = OllamaSlm::extract_json(raw);
+        assert_eq!(extracted, "{\"a\":{\"b\":1},\"c\":2}");
     }
 }
