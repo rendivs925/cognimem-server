@@ -5,18 +5,50 @@ use super::slm_types::{
     RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput, SlmMetadata,
 };
 use super::types::{ConflictResolution, MemoryTier};
+use std::fmt;
 
 pub const DEFAULT_SLM_MODEL: &str = "qwen2.5-coder:3b";
 
+#[derive(Debug, Clone)]
+pub enum SlmError {
+    RequestFailed(String),
+    InvalidResponse(String),
+    ValidationFailed(String),
+}
+
+impl fmt::Display for SlmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SlmError::RequestFailed(message) => write!(f, "request failed: {message}"),
+            SlmError::InvalidResponse(message) => write!(f, "invalid response: {message}"),
+            SlmError::ValidationFailed(message) => write!(f, "validation failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for SlmError {}
+
 pub trait SlmEngine: Send {
     fn model_name(&self) -> &str;
-    fn compress_memory(&self, input: CompressMemoryInput) -> Option<CompressMemoryOutput>;
-    fn classify_memory(&self, input: ClassifyMemoryInput) -> Option<ClassifyMemoryOutput>;
-    fn rerank_candidates(&self, input: RerankCandidatesInput) -> Option<RerankCandidatesOutput>;
-    fn resolve_conflict(&self, input: ResolveConflictInput) -> Option<ResolveConflictOutput>;
-    fn extract_persona(&self, input: ExtractPersonaInput) -> Option<ExtractPersonaOutput>;
-    fn distill_skill(&self, input: DistillSkillInput) -> Option<DistillSkillOutput>;
-    fn complete_pattern(&self, input: CompletePatternInput) -> Option<CompletePatternOutput>;
+    fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError>;
+    fn classify_memory(&self, input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError>;
+    fn rerank_candidates(
+        &self,
+        input: RerankCandidatesInput,
+    ) -> Result<RerankCandidatesOutput, SlmError>;
+    fn resolve_conflict(
+        &self,
+        input: ResolveConflictInput,
+    ) -> Result<ResolveConflictOutput, SlmError>;
+    fn extract_persona(
+        &self,
+        input: ExtractPersonaInput,
+    ) -> Result<ExtractPersonaOutput, SlmError>;
+    fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError>;
+    fn complete_pattern(
+        &self,
+        input: CompletePatternInput,
+    ) -> Result<CompletePatternOutput, SlmError>;
 }
 
 pub struct NoOpSlm;
@@ -26,8 +58,8 @@ impl SlmEngine for NoOpSlm {
         "noop"
     }
 
-    fn compress_memory(&self, input: CompressMemoryInput) -> Option<CompressMemoryOutput> {
-        Some(CompressMemoryOutput {
+    fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError> {
+        Ok(CompressMemoryOutput {
             summary: input
                 .content
                 .split_whitespace()
@@ -41,8 +73,8 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    fn classify_memory(&self, _input: ClassifyMemoryInput) -> Option<ClassifyMemoryOutput> {
-        Some(ClassifyMemoryOutput {
+    fn classify_memory(&self, _input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError> {
+        Ok(ClassifyMemoryOutput {
             tier: MemoryTier::Episodic,
             importance: 0.5,
             suppress: false,
@@ -55,14 +87,17 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    fn rerank_candidates(&self, input: RerankCandidatesInput) -> Option<RerankCandidatesOutput> {
+    fn rerank_candidates(
+        &self,
+        input: RerankCandidatesInput,
+    ) -> Result<RerankCandidatesOutput, SlmError> {
         let mut candidates = input.candidates;
         candidates.sort_by(|a, b| {
             b.initial_score
                 .partial_cmp(&a.initial_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        Some(RerankCandidatesOutput {
+        Ok(RerankCandidatesOutput {
             ranked_ids: candidates
                 .into_iter()
                 .take(input.top_n)
@@ -75,8 +110,11 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    fn resolve_conflict(&self, _input: ResolveConflictInput) -> Option<ResolveConflictOutput> {
-        Some(ResolveConflictOutput {
+    fn resolve_conflict(
+        &self,
+        _input: ResolveConflictInput,
+    ) -> Result<ResolveConflictOutput, SlmError> {
+        Ok(ResolveConflictOutput {
             kind: ConflictKind::Unrelated,
             action: ConflictResolution::LatestWins,
             merged_summary: None,
@@ -87,8 +125,11 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    fn extract_persona(&self, _input: ExtractPersonaInput) -> Option<ExtractPersonaOutput> {
-        Some(ExtractPersonaOutput {
+    fn extract_persona(
+        &self,
+        _input: ExtractPersonaInput,
+    ) -> Result<ExtractPersonaOutput, SlmError> {
+        Ok(ExtractPersonaOutput {
             profiles: Vec::new(),
             metadata: SlmMetadata {
                 model: self.model_name().to_string(),
@@ -97,9 +138,9 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    fn distill_skill(&self, input: DistillSkillInput) -> Option<DistillSkillOutput> {
+    fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
         let pattern = input.examples.first().cloned().unwrap_or_default();
-        Some(DistillSkillOutput {
+        Ok(DistillSkillOutput {
             name: pattern
                 .split_whitespace()
                 .take(3)
@@ -115,8 +156,11 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    fn complete_pattern(&self, input: CompletePatternInput) -> Option<CompletePatternOutput> {
-        Some(CompletePatternOutput {
+    fn complete_pattern(
+        &self,
+        input: CompletePatternInput,
+    ) -> Result<CompletePatternOutput, SlmError> {
+        Ok(CompletePatternOutput {
             completed_text: input.cue,
             evidence: input.context.into_iter().take(3).collect(),
             metadata: SlmMetadata {

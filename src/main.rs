@@ -10,7 +10,7 @@ use cognimem_server::memory::{
     MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs,
     RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
     RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput, RocksDbStore,
-    SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs,
+    SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, SlmError, TimelineArgs,
     TimelineResult,
 };
 use cognimem_server::memory::{
@@ -521,8 +521,8 @@ impl CogniMemServer {
                 content: memory.content.clone(),
                 tier_hint: Some(memory.tier),
             })
-            .map(|output| output.summary)
-            .unwrap_or_else(|| fallback_compress(&memory.content));
+            .map_err(|e| slm_failed("compress_memory", guard.slm.model_name(), e))?
+            .summary;
         guard.search.index(
             memory_id,
             &format!("{} {}", memory.content, compressed),
@@ -550,8 +550,8 @@ impl CogniMemServer {
                         content: skill_memory.content.clone(),
                         tier_hint: Some(skill_memory.tier),
                     })
-                    .map(|output| output.summary)
-                    .unwrap_or_else(|| fallback_compress(&skill_memory.content));
+                    .map_err(|e| slm_failed("compress_memory", slm.model_name(), e))?
+                    .summary;
                 search.index(skill_memory.id, &skill_compressed, skill_memory.tier);
                 if let Err(e) = storage.save(&skill_memory) {
                     error!("Failed to persist skill memory {}: {e}", skill_memory.id);
@@ -656,8 +656,8 @@ impl CogniMemServer {
                     candidates: candidates.clone(),
                     top_n: limit,
                 })
-                .map(|output| output.ranked_ids)
-                .unwrap_or_else(|| candidates.iter().take(limit).map(|candidate| candidate.id).collect());
+                .map_err(|e| slm_failed("rerank_candidates", guard.slm.model_name(), e))?
+                .ranked_ids;
 
             ranked_ids
                 .iter()
@@ -798,10 +798,13 @@ impl CogniMemServer {
                         memory_b_id: c.memory_id_2,
                         memory_b_content: b.to_string(),
                     })
-                    .map(|result| result.action)
-                    .unwrap_or_else(|| strategy.clone())
+                    .map_err(|e| slm_failed("resolve_conflict", slm.model_name(), e))
                 });
-                resolved.unwrap_or(strategy)
+                match resolved {
+                    Some(Ok(action)) => action.action,
+                    Some(Err(err)) => return Err(err),
+                    None => strategy,
+                }
             };
             let resolved = resolve_conflicts(graph, &conflicts, &strategy);
             for id in &resolved {
@@ -1041,8 +1044,8 @@ impl CogniMemServer {
                         .map(|content| (*content).to_string())
                         .collect(),
                 })
-                .map(|output| output.completed_text)
-                .unwrap_or_else(|| candidate.memory.content.clone());
+                .map_err(|e| slm_failed("complete_pattern", guard.slm.model_name(), e))?
+                .completed_text;
         }
 
         Ok(success_json(&CompletePatternResult { candidates }))
@@ -1071,8 +1074,8 @@ impl CogniMemServer {
                 .extract_persona(ExtractPersonaInput {
                     memories: semantic_memories,
                 })
-                .map(|output| output.profiles)
-                .unwrap_or_else(|| extract_persona(&guard.graph))
+                .map_err(|e| slm_failed("extract_persona", guard.slm.model_name(), e))?
+                .profiles
         } else {
             extract_persona(&guard.graph)
         };
@@ -1151,12 +1154,14 @@ fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64
     }
 }
 
-fn fallback_compress(content: &str) -> String {
-    content
-        .split_whitespace()
-        .take(20)
-        .collect::<Vec<_>>()
-        .join(" ")
+fn slm_failed(operation: &str, model: &str, err: SlmError) -> rmcp::ErrorData {
+    rmcp::ErrorData::new(
+        rmcp::model::ErrorCode(-32000),
+        Cow::Owned(format!(
+            "SLM operation '{operation}' failed for model '{model}': {err}"
+        )),
+        None,
+    )
 }
 
 async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_threshold: f32) {
