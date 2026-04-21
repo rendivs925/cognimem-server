@@ -2,14 +2,16 @@ mod config;
 
 use clap::Parser;
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, fuse_scores};
-use cognimem_server::memory::slm::RerankCandidate;
 use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, CognitiveMemoryUnit,
-    CompletePatternArgs, CompletePatternResult, ExecuteSkillArgs, ExecuteSkillResult,
+    CompletePatternArgs, CompletePatternInput, CompletePatternResult, CompressMemoryInput,
+    ExecuteSkillArgs, ExecuteSkillResult, ExtractPersonaInput, ExtractPersonaMemoryInput,
     ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
     MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs,
-    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RocksDbStore,
-    SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs, TimelineResult,
+    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
+    RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput, RocksDbStore,
+    SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, TimelineArgs,
+    TimelineResult,
 };
 use cognimem_server::memory::{
     MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
@@ -513,7 +515,14 @@ impl CogniMemServer {
         }
 
         guard.graph.add_memory(memory.clone());
-        let compressed = guard.slm.compress(&memory.content);
+        let compressed = guard
+            .slm
+            .compress_memory(CompressMemoryInput {
+                content: memory.content.clone(),
+                tier_hint: Some(memory.tier),
+            })
+            .map(|output| output.summary)
+            .unwrap_or_else(|| fallback_compress(&memory.content));
         guard.search.index(
             memory_id,
             &format!("{} {}", memory.content, compressed),
@@ -536,7 +545,13 @@ impl CogniMemServer {
             if let Some(skill_memory) =
                 detect_and_create_skill(graph, embedder.as_ref(), &mut **search, &memory.content)
             {
-                let skill_compressed = slm.compress(&skill_memory.content);
+                let skill_compressed = slm
+                    .compress_memory(CompressMemoryInput {
+                        content: skill_memory.content.clone(),
+                        tier_hint: Some(skill_memory.tier),
+                    })
+                    .map(|output| output.summary)
+                    .unwrap_or_else(|| fallback_compress(&skill_memory.content));
                 search.index(skill_memory.id, &skill_compressed, skill_memory.tier);
                 if let Err(e) = storage.save(&skill_memory) {
                     error!("Failed to persist skill memory {}: {e}", skill_memory.id);
@@ -626,15 +641,28 @@ impl CogniMemServer {
         });
 
         let slm_results: Vec<usize> = {
-            let candidates: Vec<RerankCandidate> = results
+            let candidates: Vec<RerankCandidateInput> = results
                 .iter()
-                .map(|m| RerankCandidate {
+                .map(|m| RerankCandidateInput {
                     id: m.id,
                     content: m.content.clone(),
-                    score: m.metadata.base_activation,
+                    initial_score: m.metadata.base_activation,
                 })
                 .collect();
-            guard.slm.rerank(&candidates, &query, limit)
+            let ranked_ids = guard
+                .slm
+                .rerank_candidates(RerankCandidatesInput {
+                    query: query.clone(),
+                    candidates: candidates.clone(),
+                    top_n: limit,
+                })
+                .map(|output| output.ranked_ids)
+                .unwrap_or_else(|| candidates.iter().take(limit).map(|candidate| candidate.id).collect());
+
+            ranked_ids
+                .iter()
+                .filter_map(|id| candidates.iter().position(|candidate| &candidate.id == id))
+                .collect()
         };
         if !slm_results.is_empty() {
             let reranked: Vec<&CognitiveMemoryUnit> = slm_results
@@ -727,7 +755,7 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let args: ReflectArgs = parse_args(args)?;
         let intensity = args.intensity.unwrap_or_else(|| "light".to_string());
-        let strategy = args
+        let strategy: cognimem_server::memory::ConflictResolution = args
             .conflict_strategy
             .as_deref()
             .and_then(|s| s.parse().ok())
@@ -764,7 +792,14 @@ impl CogniMemServer {
                         .get_memory(&c.memory_id_2)
                         .map(|m| m.content.as_str())
                         .unwrap_or("");
-                    slm.resolve_conflict(a, b)
+                    slm.resolve_conflict(ResolveConflictInput {
+                        memory_a_id: c.memory_id_1,
+                        memory_a_content: a.to_string(),
+                        memory_b_id: c.memory_id_2,
+                        memory_b_content: b.to_string(),
+                    })
+                    .map(|result| result.action)
+                    .unwrap_or_else(|| strategy.clone())
                 });
                 resolved.unwrap_or(strategy)
             };
@@ -999,7 +1034,15 @@ impl CogniMemServer {
                 .collect();
             candidate.memory.content = guard
                 .slm
-                .complete_pattern_hint(&candidate.memory.content, &associated_contents);
+                .complete_pattern(CompletePatternInput {
+                    cue: candidate.memory.content.clone(),
+                    context: associated_contents
+                        .iter()
+                        .map(|content| (*content).to_string())
+                        .collect(),
+                })
+                .map(|output| output.completed_text)
+                .unwrap_or_else(|| candidate.memory.content.clone());
         }
 
         Ok(success_json(&CompletePatternResult { candidates }))
@@ -1012,15 +1055,24 @@ impl CogniMemServer {
         let _ = parse_args::<serde_json::Map<String, serde_json::Value>>(args)?;
         let guard = self.state.lock().await;
 
-        let semantic_memories: Vec<String> = guard
+        let semantic_memories: Vec<ExtractPersonaMemoryInput> = guard
             .graph
             .get_by_tier(MemoryTier::Semantic)
             .iter()
-            .map(|m| m.content.clone())
+            .map(|m| ExtractPersonaMemoryInput {
+                id: m.id,
+                content: m.content.clone(),
+            })
             .collect();
 
         let profiles = if semantic_memories.len() >= 3 {
-            guard.slm.extract_persona(&semantic_memories)
+            guard
+                .slm
+                .extract_persona(ExtractPersonaInput {
+                    memories: semantic_memories,
+                })
+                .map(|output| output.profiles)
+                .unwrap_or_else(|| extract_persona(&guard.graph))
         } else {
             extract_persona(&guard.graph)
         };
@@ -1097,6 +1149,14 @@ fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64
             error!("Failed to persist activation update for {id}: {e}");
         }
     }
+}
+
+fn fallback_compress(content: &str) -> String {
+    content
+        .split_whitespace()
+        .take(20)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_threshold: f32) {

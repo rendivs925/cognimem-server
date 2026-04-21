@@ -1,5 +1,15 @@
-use super::slm::{RerankCandidate, SlmEngine};
-use super::types::{ConflictResolution, PersonaProfile};
+use super::slm::SlmEngine;
+use super::slm_prompts::{
+    classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt,
+    distill_skill_prompt, extract_persona_prompt, rerank_candidates_prompt,
+    resolve_conflict_prompt,
+};
+use super::slm_types::{
+    ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
+    CompressMemoryInput, CompressMemoryOutput, DistillSkillInput, DistillSkillOutput,
+    ExtractPersonaInput, ExtractPersonaOutput, RerankCandidatesInput, RerankCandidatesOutput,
+    ResolveConflictInput, ResolveConflictOutput, SlmMetadata,
+};
 use crate::memory::DEFAULT_SLM_MODEL;
 use serde::{Deserialize, Serialize};
 
@@ -86,117 +96,128 @@ impl OllamaSlm {
             }
         }
     }
+
+    fn parse_json<T: serde::de::DeserializeOwned>(&self, response: Option<String>) -> Option<T> {
+        response.and_then(|r| serde_json::from_str(&r).ok())
+    }
+
+    fn clamp_confidence(confidence: f32) -> f32 {
+        confidence.clamp(0.0, 1.0)
+    }
 }
 
 impl SlmEngine for OllamaSlm {
-    fn compress(&self, content: &str) -> String {
-        let prompt = format!(
-            "Summarize this memory in 20 words or less: {}",
-            content
-        );
-        self.generate(&prompt, 30).unwrap_or_else(|| {
-            content
-                .split_whitespace()
-                .take(20)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+    fn model_name(&self) -> &str {
+        &self.model
     }
 
-    fn rerank(&self, candidates: &[RerankCandidate], query: &str, top_n: usize) -> Vec<usize> {
-        if candidates.is_empty() {
-            return Vec::new();
+    fn compress_memory(&self, input: CompressMemoryInput) -> Option<CompressMemoryOutput> {
+        let prompt = compress_memory_prompt(&input);
+        let mut output: CompressMemoryOutput = self.parse_json(self.generate(&prompt, 80))?;
+        output.summary = output.summary.trim().to_string();
+        if output.summary.is_empty() {
+            return None;
+        }
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
+    }
+
+    fn classify_memory(&self, input: ClassifyMemoryInput) -> Option<ClassifyMemoryOutput> {
+        let prompt = classify_memory_prompt(&input);
+        let mut output: ClassifyMemoryOutput = self.parse_json(self.generate(&prompt, 160))?;
+        output.importance = output.importance.clamp(0.0, 1.0);
+        output.tags.retain(|tag| !tag.trim().is_empty());
+        output.tags.sort();
+        output.tags.dedup();
+        for assoc in &mut output.associations {
+            assoc.label = assoc.label.trim().to_string();
+            assoc.strength = assoc.strength.clamp(0.0, 1.0);
+        }
+        output.associations.retain(|assoc| !assoc.label.is_empty());
+        output.associations.truncate(20);
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
+    }
+
+    fn rerank_candidates(&self, input: RerankCandidatesInput) -> Option<RerankCandidatesOutput> {
+        if input.candidates.is_empty() {
+            return Some(RerankCandidatesOutput {
+                ranked_ids: Vec::new(),
+                metadata: SlmMetadata {
+                    model: self.model.clone(),
+                    confidence: 1.0,
+                },
+            });
         }
 
-        let context = candidates
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("[{}] {}", i, c.content))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let prompt = format!(
-            "Given the query: '{}'\nRank these candidates by relevance (return indices separated by commas):\n{}\nReturn only the indices, most relevant first.",
-            query,
-            context
-        );
-
-        let result = self.generate(&prompt, 100);
-
-        result
-            .map(|r| {
-                r.split(',')
-                    .filter_map(|s| s.trim().parse::<usize>().ok())
-                    .take(top_n)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| {
-                candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| i)
-                    .take(top_n)
-                    .collect()
-            })
+        let prompt = rerank_candidates_prompt(&input);
+        let mut output: RerankCandidatesOutput = self.parse_json(self.generate(&prompt, 160))?;
+        output.ranked_ids.truncate(input.top_n);
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
     }
 
-    fn resolve_conflict(&self, content_a: &str, content_b: &str) -> ConflictResolution {
-        let prompt = format!(
-            "Two memories contain potentially conflicting information:\n1. {}\n2. {}\nWhich one is more likely to be correct or should be kept? Reply with '1' or '2'.",
-            content_a,
-            content_b
-        );
-
-        let result = self.generate(&prompt, 10);
-
-        result
-            .map(|r| r.trim().to_string())
-            .map(|_r| ConflictResolution::LatestWins)
-            .unwrap_or(ConflictResolution::LatestWins)
+    fn resolve_conflict(&self, input: ResolveConflictInput) -> Option<ResolveConflictOutput> {
+        let prompt = resolve_conflict_prompt(&input);
+        let mut output: ResolveConflictOutput = self.parse_json(self.generate(&prompt, 120))?;
+        output.merged_summary = output.merged_summary.map(|s| s.trim().to_string());
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
     }
 
-    fn complete_pattern_hint(&self, partial: &str, context: &[&str]) -> String {
-        let context_str = context.join("\n");
-        let prompt = format!(
-            "Given this partial cue: '{}'\nAnd this context:\n{}\nSuggest what comes next or completes this memory:",
-            partial,
-            context_str
-        );
-
-        self.generate(&prompt, 50).unwrap_or_else(|| partial.to_string())
-    }
-
-    fn extract_persona(&self, memories: &[String]) -> Vec<PersonaProfile> {
-        if memories.is_empty() {
-            return Vec::new();
+    fn extract_persona(&self, input: ExtractPersonaInput) -> Option<ExtractPersonaOutput> {
+        if input.memories.is_empty() {
+            return Some(ExtractPersonaOutput {
+                profiles: Vec::new(),
+                metadata: SlmMetadata {
+                    model: self.model.clone(),
+                    confidence: 1.0,
+                },
+            });
         }
 
-        let memories_text = memories
-            .iter()
-            .enumerate()
-            .map(|(i, m)| format!("{}. {}", i + 1, m))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let prompt = extract_persona_prompt(&input);
+        let mut output: ExtractPersonaOutput = self.parse_json(self.generate(&prompt, 500))?;
+        for profile in &mut output.profiles {
+            profile.summary = profile.summary.trim().to_string();
+            profile.confidence = profile.confidence.clamp(0.0, 1.0);
+        }
+        output.profiles.retain(|profile| !profile.summary.is_empty());
+        output.profiles.truncate(6);
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
+    }
 
-        let prompt = format!(
-            r#"Analyze these memories and extract a structured persona profile.
-Return a JSON array with up to 6 entries, one per domain found. Use this format:
-[{{"domain": "work", "summary": "2-3 sentence summary", "confidence": 0.85}}]
+    fn distill_skill(&self, input: DistillSkillInput) -> Option<DistillSkillOutput> {
+        let prompt = distill_skill_prompt(&input);
+        let mut output: DistillSkillOutput = self.parse_json(self.generate(&prompt, 220))?;
+        output.name = output.name.trim().to_string();
+        output.pattern = output.pattern.trim().to_string();
+        output.steps.retain(|step| !step.trim().is_empty());
+        if output.name.is_empty() {
+            return None;
+        }
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
+    }
 
-Available domains: biography, experiences, preferences, social, work, psychometrics
-
-Memories:
-{}
-
-Return only valid JSON array, nothing else:"#,
-            memories_text
-        );
-
-        let result = self.generate(&prompt, 500);
-
-        result
-            .and_then(|r| serde_json::from_str(&r).ok())
-            .unwrap_or_default()
+    fn complete_pattern(&self, input: CompletePatternInput) -> Option<CompletePatternOutput> {
+        let prompt = complete_pattern_prompt(&input);
+        let mut output: CompletePatternOutput = self.parse_json(self.generate(&prompt, 180))?;
+        output.completed_text = output.completed_text.trim().to_string();
+        output.evidence.retain(|item| !item.trim().is_empty());
+        if output.completed_text.is_empty() {
+            return None;
+        }
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Some(output)
     }
 }
 

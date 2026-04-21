@@ -7,6 +7,8 @@ pub mod pattern;
 pub mod persona;
 pub mod skill;
 pub mod slm;
+pub mod slm_prompts;
+pub mod slm_types;
 pub mod storage;
 pub mod store;
 pub mod types;
@@ -21,6 +23,7 @@ pub use pattern::{
 pub use persona::extract_persona;
 pub use skill::{detect_and_create_skill, find_skill};
 pub use slm::{DEFAULT_SLM_MODEL, NoOpSlm, SlmEngine};
+pub use slm_types::*;
 pub use ollama::OllamaSlm;
 pub use storage::RocksDbStore;
 pub use store::MemoryStore;
