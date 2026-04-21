@@ -897,3 +897,106 @@ impl HandoffSummary {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureEventType {
+    SessionStarted,
+    SessionEnded,
+    TurnStarted,
+    TurnEnded,
+    ToolStarted,
+    ToolEnded,
+    TaskCreated,
+    TaskCompleted,
+    SessionIdle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureEvent {
+    pub event_type: CaptureEventType,
+    pub session_id: Option<Uuid>,
+    pub project_path: Option<String>,
+    pub turn_id: Option<Uuid>,
+    pub tool_name: Option<String>,
+    pub task_name: Option<String>,
+    pub content: Option<String>,
+    pub success: Option<bool>,
+    pub timestamp: i64,
+}
+
+impl CaptureEvent {
+    pub fn new(event_type: CaptureEventType) -> Self {
+        Self {
+            event_type,
+            session_id: None,
+            project_path: None,
+            turn_id: None,
+            tool_name: None,
+            task_name: None,
+            content: None,
+            success: None,
+            timestamp: Utc::now().timestamp(),
+        }
+    }
+
+    pub fn session_started(project_path: String) -> Self {
+        let mut evt = Self::new(CaptureEventType::SessionStarted);
+        evt.project_path = Some(project_path);
+        evt
+    }
+
+    pub fn tool_executed(tool_name: String, success: bool) -> Self {
+        let evt_type = if success {
+            CaptureEventType::ToolEnded
+        } else {
+            CaptureEventType::ToolEnded
+        };
+        let mut evt = Self::new(evt_type);
+        evt.tool_name = Some(tool_name);
+        evt.success = Some(success);
+        evt
+    }
+
+    pub fn task_created(task_name: String) -> Self {
+        let mut evt = Self::new(CaptureEventType::TaskCreated);
+        evt.task_name = Some(task_name);
+        evt
+    }
+
+    pub fn session_ended() -> Self {
+        Self::new(CaptureEventType::SessionEnded)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionBuffer {
+    pub events: Vec<CaptureEvent>,
+    pub started_at: i64,
+    pub last_activity: i64,
+}
+
+impl SessionBuffer {
+    pub fn new() -> Self {
+        let now = Utc::now().timestamp();
+        Self {
+            events: Vec::new(),
+            started_at: now,
+            last_activity: now,
+        }
+    }
+
+    pub fn add_event(&mut self, event: CaptureEvent) {
+        self.last_activity = event.timestamp;
+        self.events.push(event);
+    }
+
+    pub fn should_flush(&self) -> bool {
+        self.events.len() >= 5 || Utc::now().timestamp() - self.last_activity > 120
+    }
+
+    pub fn clear(&mut self) {
+        self.events.clear();
+        self.started_at = Utc::now().timestamp();
+        self.last_activity = Utc::now().timestamp();
+    }
+}

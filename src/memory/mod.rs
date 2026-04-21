@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod consolidation;
 pub mod decay;
 pub mod graph;
@@ -14,6 +15,7 @@ pub mod store;
 pub mod timescale;
 pub mod types;
 
+pub use capture::{aggregate_tool_events, CaptureIngest};
 pub use consolidation::{consolidate, detect_conflicts, resolve_conflicts};
 pub use decay::{apply_decay_to_all, promote_memories, prune_below_threshold};
 pub use graph::MemoryGraph;
