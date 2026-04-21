@@ -123,7 +123,7 @@ pub fn rank_by_timescale(graph: &mut MemoryGraph, query_weights: Vec<(Uuid, f32)
                 Some(m) => m,
                 None => return (id, base_score),
             };
-            let timescale_score = manager.compute_recall_score(&memory, now);
+            let timescale_score = manager.compute_recall_score(memory, now);
             let final_score = base_score * 0.6 + timescale_score * 0.4;
             (id, final_score)
         })

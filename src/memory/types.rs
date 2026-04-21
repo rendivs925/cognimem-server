@@ -89,8 +89,10 @@ impl MemoryTier {
 
 /// Memory scope determines whether a memory is global or project-specific.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MemoryScope {
     /// Applies to all projects and sessions.
+    #[default]
     Global,
     /// Specific to one project path.
     Project { project_path: String },
@@ -111,11 +113,6 @@ impl MemoryScope {
     }
 }
 
-impl Default for MemoryScope {
-    fn default() -> Self {
-        MemoryScope::Global
-    }
-}
 
 impl MemoryScope {
     /// Parses scope from string: "global" → Global, "/path" → Project(path)

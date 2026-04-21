@@ -50,7 +50,7 @@ impl CaptureIngest {
                 "Session ended".to_string()
             }
             CaptureEventType::TurnStarted => {
-                format!("Turn started")
+                "Turn started".to_string()
             }
             CaptureEventType::TurnEnded => {
                 event.content.clone().unwrap_or_else(|| "Turn completed".to_string())

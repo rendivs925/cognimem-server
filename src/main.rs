@@ -1347,22 +1347,21 @@ impl CogniMemServer {
         };
         let hours = args.get("hours")
             .and_then(|v| v.as_i64())
-            .unwrap_or(24) as i64;
+            .unwrap_or(24);
 
         let mut guard = self.state.lock().await;
 
         let session_id = guard.session_context.as_ref()
             .map(|s| s.session_id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4());
+            .unwrap_or_else(uuid::Uuid::new_v4);
 
-        if let Some(existing) = guard.work_claims.get(&memory_id) {
-            if existing.status == ClaimStatus::Active && !existing.is_expired() {
+        if let Some(existing) = guard.work_claims.get(&memory_id)
+            && existing.status == ClaimStatus::Active && !existing.is_expired() {
                 return Err(invalid_params(&format!(
                     "Memory {} is already claimed by session {}",
                     memory_id, existing.session_id
                 )));
             }
-        }
 
         let claim = WorkClaim::new(memory_id, session_id, claim_type, hours);
         let claim_clone = claim.clone();
@@ -1433,8 +1432,8 @@ impl CogniMemServer {
         let mut available: Vec<serde_json::Value> = Vec::new();
 
         for (id, claim) in &guard.work_claims {
-            if claim.status == ClaimStatus::Active && claim.is_expired() {
-                if let Some(mem) = guard.graph.get_memory(id) {
+            if claim.status == ClaimStatus::Active && claim.is_expired()
+                && let Some(mem) = guard.graph.get_memory(id) {
                     if let Some(ref pp) = project_path {
                         if let Some(ref mem_pp) = mem.scope.project_path() {
                             if mem_pp != pp {
@@ -1452,7 +1451,6 @@ impl CogniMemServer {
                         "expired_at": claim.leased_until
                     }));
                 }
-            }
         }
 
         available.truncate(limit);
