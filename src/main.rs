@@ -8,8 +8,8 @@ use cognimem_server::memory::{
     CompressMemoryInput,
     ExecuteSkillArgs, ExecuteSkillResult, ExtractPersonaInput, ExtractPersonaMemoryInput,
     ExtractPersonaResult, ForgetArgs, ForgetResult, GetObservationsArgs, InMemoryStore,
-    MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult, RecallArgs,
-    RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
+    MemoryScope, MemoryStore, MemorySummary, MemoryTier, NoOpSlm, OllamaSlm, ObservationsResult,
+    RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult,
     RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput, RocksDbStore,
     SearchArgs, SearchResult, SearchResults, SkillMemory, SlmEngine, SlmError, TimelineArgs,
     TimelineResult,
@@ -628,8 +628,18 @@ impl CogniMemServer {
         let limit = args.limit.unwrap_or(5);
         let min_activation = args.min_activation.unwrap_or(0.0);
         let now = chrono::Utc::now().timestamp();
+        let project_path = args.project_path.clone();
+        let scope_filter = args.scope_filter.clone().unwrap_or_else(|| "both".to_string());
 
         let mut guard = self.state.lock().await;
+
+        let scope_matches = |scope: &MemoryScope| -> bool {
+            match scope_filter.as_str() {
+                "global" => scope.is_global(),
+                "project" => !scope.is_global(),
+                _ => true,
+            }
+        };
 
         let query_emb = guard.embedder.embed(&query);
 
@@ -669,7 +679,9 @@ impl CogniMemServer {
         let mut results: Vec<&CognitiveMemoryUnit> = fused
             .iter()
             .filter_map(|(id, _)| guard.graph.get_memory(id))
-            .filter(|m| m.metadata.base_activation >= min_activation)
+            .filter(|m| {
+                m.metadata.base_activation >= min_activation && scope_matches(&m.scope)
+            })
             .collect();
 
         let direct_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();

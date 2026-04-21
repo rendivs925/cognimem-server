@@ -87,6 +87,50 @@ impl MemoryTier {
     }
 }
 
+/// Memory scope determines whether a memory is global or project-specific.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryScope {
+    /// Applies to all projects and sessions.
+    Global,
+    /// Specific to one project path.
+    Project { project_path: String },
+}
+
+impl MemoryScope {
+    /// Returns true if this is a global scope.
+    pub fn is_global(&self) -> bool {
+        matches!(self, MemoryScope::Global)
+    }
+
+    /// Returns the project path if project-scoped, None if global.
+    pub fn project_path(&self) -> Option<&str> {
+        match self {
+            MemoryScope::Global => None,
+            MemoryScope::Project { project_path } => Some(project_path),
+        }
+    }
+}
+
+impl Default for MemoryScope {
+    fn default() -> Self {
+        MemoryScope::Global
+    }
+}
+
+impl MemoryScope {
+    /// Parses scope from string: "global" → Global, "/path" → Project(path)
+    pub fn from_str(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("global") {
+            Some(MemoryScope::Global)
+        } else if s.starts_with('/') || s.starts_with("~") {
+            Some(MemoryScope::Project { project_path: s.to_string() })
+        } else {
+            None
+        }
+    }
+}
+
 /// Domains for persona classification of memories.
 #[derive(
     Debug,
@@ -153,6 +197,14 @@ pub struct MemoryMetadata {
     /// Full rehearsal history used for ACT-R style base-level activation.
     #[serde(default)]
     pub rehearsal_history: Vec<i64>,
+    /// Emotional/conceptual salience that modulates activation decay.
+    /// Higher salience = slower decay (more memorable). Range [0.5, 2.0].
+    #[serde(default = "default_salience")]
+    pub salience: f32,
+}
+
+fn default_salience() -> f32 {
+    1.0
 }
 
 impl Default for MemoryMetadata {
@@ -176,18 +228,22 @@ impl MemoryMetadata {
             base_activation: 1.0,
             decay_rate,
             rehearsal_history: vec![now],
+            salience: 1.0,
         }
     }
 
     /// Recomputes `base_activation` based on elapsed time since last access.
     ///
     /// Uses an ACT-R style base-level activation model:
-    /// `B = ln(sum((t_now - t_i + 1)^-d))`, with a floor of 0.01.
+    /// `B = salience * ln(sum((t_now - t_i + 1)^-d))`, with a floor of 0.01.
+    ///
+    /// The salience factor modulates decay - higher salience = slower decay = more durable memory.
     pub fn update_activation(&mut self, now: i64) {
         if self.rehearsal_history.is_empty() {
             self.rehearsal_history.push(self.last_accessed.max(self.created_at));
         }
         let decay = self.decay_rate as f64;
+        let salience = self.salience as f64;
         let summed: f64 = self.rehearsal_history
             .iter()
             .map(|&timestamp| {
@@ -195,7 +251,7 @@ impl MemoryMetadata {
                 elapsed.powf(-decay)
             })
             .sum();
-        let new_activation = summed.ln();
+        let new_activation = salience * summed.ln();
         self.base_activation = new_activation.max(0.01) as f32;
     }
 
@@ -223,6 +279,12 @@ pub struct CognitiveMemoryUnit {
     pub metadata: MemoryMetadata,
     /// IDs of memories this unit is associated with.
     pub associations: Vec<Uuid>,
+    /// Memory scope: global vs project-isolated.
+    #[serde(default)]
+    pub scope: MemoryScope,
+    /// Optional override for scope detection.
+    #[serde(default)]
+    pub scope_override: Option<MemoryScope>,
     /// Optional persona domain classification.
     #[serde(default)]
     pub persona: Option<PersonaDomain>,
@@ -243,7 +305,7 @@ impl Default for CognitiveMemoryUnit {
 impl CognitiveMemoryUnit {
     /// Creates a new memory unit with the given content, tier, importance, and decay rate.
     ///
-    /// A new UUID is generated. Associations, persona, and RACI roles start empty.
+    /// A new UUID is generated. All other fields start empty/default. Scope defaults to Global.
     pub fn new(content: String, tier: MemoryTier, importance: f32, decay_rate: f32) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -251,6 +313,8 @@ impl CognitiveMemoryUnit {
             content,
             metadata: MemoryMetadata::new(importance, decay_rate),
             associations: Vec::new(),
+            scope: MemoryScope::Global,
+            scope_override: None,
             persona: None,
             raci: RaciRoles::default(),
             model: ModelMemoryMetadata::default(),
@@ -267,6 +331,9 @@ pub struct RememberArgs {
     pub tier: Option<MemoryTier>,
     /// Optional importance override in [0, 1].
     pub importance: Option<f32>,
+    /// Optional scope override: "global" or project path. Default: auto-detect.
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Optional pre-existing association IDs.
     pub associations: Option<Vec<Uuid>>,
 }
@@ -278,6 +345,12 @@ pub struct RecallArgs {
     pub query: String,
     /// Optional tier filter.
     pub tier: Option<MemoryTier>,
+    /// Optional project path to filter memories. If None, searches global only.
+    #[serde(default)]
+    pub project_path: Option<String>,
+    /// Optional scope filter: "global", "project", or "both". Default: "both".
+    #[serde(default)]
+    pub scope_filter: Option<String>,
     /// Optional maximum number of results.
     pub limit: Option<usize>,
     /// Optional minimum activation threshold for returned memories.
@@ -338,6 +411,9 @@ pub struct MemorySummary {
     pub tier: MemoryTier,
     /// The memory's current activation level.
     pub activation: f32,
+    /// The memory's scope (global or project path).
+    #[serde(default)]
+    pub scope: MemoryScope,
 }
 
 impl From<&CognitiveMemoryUnit> for MemorySummary {
@@ -347,6 +423,7 @@ impl From<&CognitiveMemoryUnit> for MemorySummary {
             content: memory.content.clone(),
             tier: memory.tier,
             activation: memory.metadata.base_activation,
+            scope: memory.scope.clone(),
         }
     }
 }
