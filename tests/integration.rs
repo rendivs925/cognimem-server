@@ -1305,3 +1305,57 @@ fn test_memory_null_bytes() {
     let mem = CognitiveMemoryUnit::new(with_nulls.to_string(), MemoryTier::Episodic, 0.5, 0.5);
     assert!(mem.content.contains('\0'));
 }
+
+// ============================================================================
+// End-to-End MCP Handler Tests
+// ============================================================================
+
+use cognimem_server::memory::capture::CaptureIngest;
+
+#[test]
+fn test_end_to_end_memory_flow() {
+    let mut graph = MemoryGraph::new();
+
+    let mem = CognitiveMemoryUnit::new(
+        "Test end-to-end flow".to_string(),
+        MemoryTier::Episodic,
+        0.7,
+        0.5,
+    );
+    let id = graph.add_memory(mem);
+    assert!(id != Uuid::nil());
+
+    let retrieved = graph.get_memory(&id);
+    assert!(retrieved.is_some());
+
+    let memories = graph.get_by_tier(MemoryTier::Episodic);
+    assert!(!memories.is_empty());
+}
+
+#[test]
+fn test_full_work_claim_flow() {
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
+
+    let memory_id = Uuid::new_v4();
+    let session_id = Uuid::new_v4();
+    let mut claim = WorkClaim::new(memory_id, session_id, ClaimType::Research, 1);
+    
+    assert!(!claim.memory_id.is_nil());
+    assert!(!claim.is_expired());
+    assert_eq!(claim.status, cognimem_server::memory::types::ClaimStatus::Active);
+
+    claim.release();
+    assert_eq!(claim.status, cognimem_server::memory::types::ClaimStatus::Released);
+}
+
+#[test]
+fn test_capture_event_to_memory() {
+    let ingest = CaptureIngest::default();
+
+    let mut event = CaptureEvent::new(cognimem_server::memory::types::CaptureEventType::ToolEnded);
+    event.tool_name = Some("remember".to_string());
+    event.content = Some("Test capture".to_string());
+
+    let result = ingest.event_to_memory(&event, None);
+    assert!(result.is_some());
+}
