@@ -374,7 +374,25 @@ impl ServerHandler for CogniMemServer {
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "turns": { "type": "array" }
+                        "turns": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "turn_id": { "type": "string", "format": "uuid" },
+                                    "content": { "type": "string" },
+                                    "tool_usage": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "decisions": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    }
+                                },
+                                "required": ["content"]
+                            }
+                        }
                     },
                     "required": ["turns"]
                 })),
@@ -385,9 +403,41 @@ impl ServerHandler for CogniMemServer {
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "turns": { "type": "array" },
-                        "completed_tasks": { "type": "array" },
-                        "open_tasks": { "type": "array" }
+                        "turns": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "turn_id": { "type": "string", "format": "uuid" },
+                                    "content": { "type": "string" }
+                                },
+                                "required": ["content"]
+                            }
+                        },
+                        "completed_tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task_id": { "type": "string", "format": "uuid" },
+                                    "title": { "type": "string" },
+                                    "status": { "type": "string" }
+                                },
+                                "required": ["title"]
+                            }
+                        },
+                        "open_tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task_id": { "type": "string", "format": "uuid" },
+                                    "title": { "type": "string" },
+                                    "status": { "type": "string" }
+                                },
+                                "required": ["title"]
+                            }
+                        }
                     },
                     "required": ["turns"]
                 })),
