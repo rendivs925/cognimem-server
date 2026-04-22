@@ -1,5 +1,5 @@
-use super::types::{CanonicalEvent, IngestResult, IngestStats};
 use super::pipeline::{CapturePipeline, get_ingest_stats};
+use super::types::{CanonicalEvent, IngestResult, IngestStats};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};

@@ -1,9 +1,8 @@
 use super::slm::{SlmEngine, SlmError};
 use super::slm_prompts::{
-    classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt,
-    distill_skill_prompt, extract_best_practice_prompt, extract_persona_prompt,
-    rerank_candidates_prompt, resolve_conflict_prompt, summarize_session_prompt,
-    summarize_turn_prompt,
+    classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt, distill_skill_prompt,
+    extract_best_practice_prompt, extract_persona_prompt, rerank_candidates_prompt,
+    resolve_conflict_prompt, summarize_session_prompt, summarize_turn_prompt,
 };
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
@@ -164,9 +163,21 @@ impl OllamaSlm {
         };
         if let serde_json::Value::Object(ref mut map) = val {
             let array_fields = [
-                "ranked_ids", "tags", "steps", "evidence", "source_ids",
-                "associations", "practices", "applies_to", "key_decisions", "key_actions",
-                "completed", "unresolved", "next_steps", "consulted", "informed",
+                "ranked_ids",
+                "tags",
+                "steps",
+                "evidence",
+                "source_ids",
+                "associations",
+                "practices",
+                "applies_to",
+                "key_decisions",
+                "key_actions",
+                "completed",
+                "unresolved",
+                "next_steps",
+                "consulted",
+                "informed",
             ];
             for field in array_fields {
                 if let Some(serde_json::Value::Object(obj)) = map.get(field) {
@@ -212,9 +223,13 @@ impl SlmEngine for OllamaSlm {
         &self.model
     }
 
-    async fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError> {
+    async fn compress_memory(
+        &self,
+        input: CompressMemoryInput,
+    ) -> Result<CompressMemoryOutput, SlmError> {
         let prompt = compress_memory_prompt(&input);
-        let mut output: CompressMemoryOutput = self.parse_json(self.generate(&prompt, 80).await).await?;
+        let mut output: CompressMemoryOutput =
+            self.parse_json(self.generate(&prompt, 80).await).await?;
         output.summary = output.summary.trim().to_string();
         if output.summary.is_empty() {
             return Err(SlmError::ValidationFailed(
@@ -226,9 +241,13 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    async fn classify_memory(&self, input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError> {
+    async fn classify_memory(
+        &self,
+        input: ClassifyMemoryInput,
+    ) -> Result<ClassifyMemoryOutput, SlmError> {
         let prompt = classify_memory_prompt(&input);
-        let mut output: ClassifyMemoryOutput = self.parse_json(self.generate(&prompt, 160).await).await?;
+        let mut output: ClassifyMemoryOutput =
+            self.parse_json(self.generate(&prompt, 160).await).await?;
 
         output.importance = output.importance.clamp(0.0, 1.0);
         output.tags = output
@@ -252,9 +271,13 @@ impl SlmEngine for OllamaSlm {
         let mut seen_labels = std::collections::HashSet::new();
         let mut seen_ids = std::collections::HashSet::new();
         output.associations.retain(|assoc| {
-            if assoc.label.is_empty() { return false; }
+            if assoc.label.is_empty() {
+                return false;
+            }
             let key = assoc.label.to_lowercase();
-            if !seen_labels.insert(key) { return false; }
+            if !seen_labels.insert(key) {
+                return false;
+            }
             if let Some(id) = assoc.memory_id {
                 seen_ids.insert(id)
             } else {
@@ -287,7 +310,8 @@ impl SlmEngine for OllamaSlm {
         }
 
         let prompt = rerank_candidates_prompt(&input);
-        let mut output: RerankCandidatesOutput = self.parse_json(self.generate(&prompt, 160).await).await?;
+        let mut output: RerankCandidatesOutput =
+            self.parse_json(self.generate(&prompt, 160).await).await?;
         output.ranked_ids.truncate(input.top_n);
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
@@ -299,7 +323,8 @@ impl SlmEngine for OllamaSlm {
         input: ResolveConflictInput,
     ) -> Result<ResolveConflictOutput, SlmError> {
         let prompt = resolve_conflict_prompt(&input);
-        let mut output: ResolveConflictOutput = self.parse_json(self.generate(&prompt, 120).await).await?;
+        let mut output: ResolveConflictOutput =
+            self.parse_json(self.generate(&prompt, 120).await).await?;
         output.merged_summary = output.merged_summary.map(|s| s.trim().to_string());
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
@@ -321,21 +346,28 @@ impl SlmEngine for OllamaSlm {
         }
 
         let prompt = extract_persona_prompt(&input);
-        let mut output: ExtractPersonaOutput = self.parse_json(self.generate(&prompt, 500).await).await?;
+        let mut output: ExtractPersonaOutput =
+            self.parse_json(self.generate(&prompt, 500).await).await?;
         for profile in &mut output.profiles {
             profile.summary = profile.summary.trim().to_string();
             profile.confidence = profile.confidence.clamp(0.0, 1.0);
         }
-        output.profiles.retain(|profile| !profile.summary.is_empty());
+        output
+            .profiles
+            .retain(|profile| !profile.summary.is_empty());
         output.profiles.truncate(6);
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    async fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
+    async fn distill_skill(
+        &self,
+        input: DistillSkillInput,
+    ) -> Result<DistillSkillOutput, SlmError> {
         let prompt = distill_skill_prompt(&input);
-        let mut output: DistillSkillOutput = self.parse_json(self.generate(&prompt, 220).await).await?;
+        let mut output: DistillSkillOutput =
+            self.parse_json(self.generate(&prompt, 220).await).await?;
         output.name = output.name.trim().to_string();
         output.pattern = output.pattern.trim().to_string();
         output.steps.retain(|step| !step.trim().is_empty());
@@ -354,7 +386,8 @@ impl SlmEngine for OllamaSlm {
         input: CompletePatternInput,
     ) -> Result<CompletePatternOutput, SlmError> {
         let prompt = complete_pattern_prompt(&input);
-        let mut output: CompletePatternOutput = self.parse_json(self.generate(&prompt, 180).await).await?;
+        let mut output: CompletePatternOutput =
+            self.parse_json(self.generate(&prompt, 180).await).await?;
         output.completed_text = output.completed_text.trim().to_string();
         output.evidence.retain(|item| !item.trim().is_empty());
         if output.completed_text.is_empty() {
@@ -367,25 +400,37 @@ impl SlmEngine for OllamaSlm {
         Ok(output)
     }
 
-    async fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError> {
+    async fn summarize_turn(
+        &self,
+        input: SummarizeTurnInput,
+    ) -> Result<SummarizeTurnOutput, SlmError> {
         let prompt = summarize_turn_prompt(&input);
-        let mut output: SummarizeTurnOutput = self.parse_json(self.generate(&prompt, 180).await).await?;
+        let mut output: SummarizeTurnOutput =
+            self.parse_json(self.generate(&prompt, 180).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    async fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError> {
+    async fn summarize_session(
+        &self,
+        input: SummarizeSessionInput,
+    ) -> Result<SummarizeSessionOutput, SlmError> {
         let prompt = summarize_session_prompt(&input);
-        let mut output: SummarizeSessionOutput = self.parse_json(self.generate(&prompt, 240).await).await?;
+        let mut output: SummarizeSessionOutput =
+            self.parse_json(self.generate(&prompt, 240).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 
-    async fn extract_best_practice(&self, input: ExtractBestPracticeInput) -> Result<ExtractBestPracticeOutput, SlmError> {
+    async fn extract_best_practice(
+        &self,
+        input: ExtractBestPracticeInput,
+    ) -> Result<ExtractBestPracticeOutput, SlmError> {
         let prompt = extract_best_practice_prompt(&input);
-        let mut output: ExtractBestPracticeOutput = self.parse_json(self.generate(&prompt, 180).await).await?;
+        let mut output: ExtractBestPracticeOutput =
+            self.parse_json(self.generate(&prompt, 180).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)

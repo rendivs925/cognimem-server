@@ -53,6 +53,28 @@ impl MemoryGraph {
         id
     }
 
+    /// Rebuilds association edges from the associations stored on each memory.
+    ///
+    /// This is primarily used after loading persisted memories, where insertion
+    /// order should not determine which edges exist.
+    pub fn rebuild_associations(&mut self) {
+        self.edges.clear();
+        let ids: Vec<Uuid> = self.id_to_key.keys().copied().collect();
+
+        for id in ids {
+            let associations = self
+                .get_memory(&id)
+                .map(|memory| memory.associations.clone())
+                .unwrap_or_default();
+
+            for assoc_id in associations {
+                if self.contains(&assoc_id) {
+                    self.edges.insert((id, assoc_id), 0.5);
+                }
+            }
+        }
+    }
+
     /// Returns a shared reference to the memory with the given ID, if it exists.
     pub fn get_memory(&self, id: &Uuid) -> Option<&CognitiveMemoryUnit> {
         let key = self.id_to_key.get(id)?;
@@ -336,6 +358,27 @@ mod tests {
 
         graph.remove_memory(&id2);
         assert!(graph.get_associations(&id1).is_empty());
+    }
+
+    #[test]
+    fn rebuild_associations_restores_edges_independent_of_load_order() {
+        let mut second = make_memory("second", MemoryTier::Episodic);
+        let first_id = Uuid::new_v4();
+        second.associations = vec![first_id];
+
+        let mut first = make_memory("first", MemoryTier::Episodic);
+        first.id = first_id;
+
+        let mut graph = MemoryGraph::new();
+        let second_id = graph.add_memory(second);
+        graph.add_memory(first);
+
+        assert!(graph.get_associations(&second_id).is_empty());
+        graph.rebuild_associations();
+
+        let associations = graph.get_associations(&second_id);
+        assert_eq!(associations.len(), 1);
+        assert_eq!(associations[0].0, first_id);
     }
 
     #[test]

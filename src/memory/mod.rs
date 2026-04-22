@@ -16,21 +16,21 @@ pub mod store;
 pub mod timescale;
 pub mod types;
 
-pub use capture::{aggregate_tool_events, CaptureIngest};
+pub use capture::{CaptureIngest, aggregate_tool_events};
 pub use consolidation::{consolidate, detect_conflicts, resolve_conflicts};
-pub use project_model::{detect_convention_patterns, ProjectModelManager};
 pub use decay::{apply_decay_to_all, promote_memories, prune_below_threshold};
 pub use graph::MemoryGraph;
 pub use in_memory::InMemoryStore;
+pub use ollama::OllamaSlm;
 pub use pattern::{
     CompletePatternArgs, CompletePatternResult, complete_pattern, strengthen_co_activated,
 };
 pub use persona::extract_persona;
+pub use project_model::{ProjectModelManager, detect_convention_patterns};
 pub use skill::{detect_and_create_skill, execute_skill, find_skill};
 pub use slm::{DEFAULT_SLM_MODEL, NoOpSlm, SlmEngine, SlmError};
 pub use slm_types::*;
-pub use timescale::{apply_stdp, rank_by_timescale, DualTimescaleManager, TimescaleKind};
-pub use ollama::OllamaSlm;
 pub use storage::RocksDbStore;
 pub use store::MemoryStore;
+pub use timescale::{DualTimescaleManager, TimescaleKind, apply_stdp, rank_by_timescale};
 pub use types::*;

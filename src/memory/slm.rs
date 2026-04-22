@@ -1,10 +1,10 @@
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
-    CompressMemoryInput, CompressMemoryOutput, ConflictKind, DistillSkillInput,
-    DistillSkillOutput, ExtractBestPracticeInput, ExtractBestPracticeOutput, ExtractPersonaInput,
-    ExtractPersonaOutput, RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput,
-    ResolveConflictOutput, SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput,
-    SummarizeTurnInput, SummarizeTurnOutput,
+    CompressMemoryInput, CompressMemoryOutput, ConflictKind, DistillSkillInput, DistillSkillOutput,
+    ExtractBestPracticeInput, ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
+    RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
+    SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
+    SummarizeTurnOutput,
 };
 use super::types::{ConflictResolution, MemoryTier};
 use async_trait::async_trait;
@@ -34,8 +34,14 @@ impl std::error::Error for SlmError {}
 #[async_trait]
 pub trait SlmEngine: Send + Sync {
     fn model_name(&self) -> &str;
-    async fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError>;
-    async fn classify_memory(&self, input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError>;
+    async fn compress_memory(
+        &self,
+        input: CompressMemoryInput,
+    ) -> Result<CompressMemoryOutput, SlmError>;
+    async fn classify_memory(
+        &self,
+        input: ClassifyMemoryInput,
+    ) -> Result<ClassifyMemoryOutput, SlmError>;
     async fn rerank_candidates(
         &self,
         input: RerankCandidatesInput,
@@ -48,13 +54,20 @@ pub trait SlmEngine: Send + Sync {
         &self,
         input: ExtractPersonaInput,
     ) -> Result<ExtractPersonaOutput, SlmError>;
-    async fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError>;
+    async fn distill_skill(&self, input: DistillSkillInput)
+    -> Result<DistillSkillOutput, SlmError>;
     async fn complete_pattern(
         &self,
         input: CompletePatternInput,
     ) -> Result<CompletePatternOutput, SlmError>;
-    async fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError>;
-    async fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError>;
+    async fn summarize_turn(
+        &self,
+        input: SummarizeTurnInput,
+    ) -> Result<SummarizeTurnOutput, SlmError>;
+    async fn summarize_session(
+        &self,
+        input: SummarizeSessionInput,
+    ) -> Result<SummarizeSessionOutput, SlmError>;
     async fn extract_best_practice(
         &self,
         input: ExtractBestPracticeInput,
@@ -69,7 +82,10 @@ impl SlmEngine for NoOpSlm {
         "noop"
     }
 
-    async fn compress_memory(&self, input: CompressMemoryInput) -> Result<CompressMemoryOutput, SlmError> {
+    async fn compress_memory(
+        &self,
+        input: CompressMemoryInput,
+    ) -> Result<CompressMemoryOutput, SlmError> {
         Ok(CompressMemoryOutput {
             summary: input
                 .content
@@ -84,7 +100,10 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    async fn classify_memory(&self, _input: ClassifyMemoryInput) -> Result<ClassifyMemoryOutput, SlmError> {
+    async fn classify_memory(
+        &self,
+        _input: ClassifyMemoryInput,
+    ) -> Result<ClassifyMemoryOutput, SlmError> {
         Ok(ClassifyMemoryOutput {
             tier: MemoryTier::Episodic,
             importance: 0.5,
@@ -149,7 +168,10 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    async fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
+    async fn distill_skill(
+        &self,
+        input: DistillSkillInput,
+    ) -> Result<DistillSkillOutput, SlmError> {
         let pattern = input.examples.first().cloned().unwrap_or_default();
         Ok(DistillSkillOutput {
             name: pattern
@@ -181,8 +203,13 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    async fn summarize_turn(&self, input: SummarizeTurnInput) -> Result<SummarizeTurnOutput, SlmError> {
-        let summary = input.turns.first()
+    async fn summarize_turn(
+        &self,
+        input: SummarizeTurnInput,
+    ) -> Result<SummarizeTurnOutput, SlmError> {
+        let summary = input
+            .turns
+            .first()
             .map(|t| t.content.chars().take(200).collect())
             .unwrap_or_default();
         Ok(SummarizeTurnOutput {
@@ -196,13 +223,22 @@ impl SlmEngine for NoOpSlm {
         })
     }
 
-    async fn summarize_session(&self, input: SummarizeSessionInput) -> Result<SummarizeSessionOutput, SlmError> {
-        let summary = input.turns.first()
+    async fn summarize_session(
+        &self,
+        input: SummarizeSessionInput,
+    ) -> Result<SummarizeSessionOutput, SlmError> {
+        let summary = input
+            .turns
+            .first()
             .map(|t| t.content.chars().take(200).collect())
             .unwrap_or_default();
         Ok(SummarizeSessionOutput {
             summary,
-            completed: input.completed_tasks.iter().map(|t| t.title.clone()).collect(),
+            completed: input
+                .completed_tasks
+                .iter()
+                .map(|t| t.title.clone())
+                .collect(),
             unresolved: input.open_tasks.iter().map(|t| t.title.clone()).collect(),
             next_steps: Vec::new(),
             handoff_context: None,
@@ -223,9 +259,18 @@ impl SlmEngine for NoOpSlm {
         let keywords = [
             ("DRY", "Don't Repeat Yourself - extract common patterns"),
             ("KISS", "Keep It Simple - prefer simple over clever"),
-            ("YAGNI", "You Aren't Gonna Need It - don't add features until needed"),
-            ("SOLID", "Single responsibility, Open-closed, Liskov substitution, Interface segregation, Dependency inversion"),
-            ("guard clause", "Reject invalid inputs early at function entrance"),
+            (
+                "YAGNI",
+                "You Aren't Gonna Need It - don't add features until needed",
+            ),
+            (
+                "SOLID",
+                "Single responsibility, Open-closed, Liskov substitution, Interface segregation, Dependency inversion",
+            ),
+            (
+                "guard clause",
+                "Reject invalid inputs early at function entrance",
+            ),
         ];
 
         for (keyword, principle) in keywords {

@@ -5,14 +5,14 @@ use cognimem_server::capture::{CapturePipeline, start_capture_server};
 use cognimem_server::embeddings::fuse_scores;
 use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus, ClaimType,
-    CognitiveMemoryUnit, ClassifyMemoryInput, CompletePatternArgs, CompletePatternInput,
+    ClassifyMemoryInput, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternInput,
     CompletePatternResult, CompressMemoryInput, ExecuteSkillArgs, ExecuteSkillResult,
     ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
-    GetObservationsArgs, InMemoryStore, MemoryScope, MemoryStore, MemorySummary,
-    MemoryTier, ObservationsResult, RecallArgs, RecallResult, ReflectArgs, ReflectResult,
-    RememberArgs, RememberResult, RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput,
-    RocksDbStore, SearchArgs, SearchResult, SearchResults, SkillMemory,
-    SlmError, TimelineArgs, TimelineResult, WorkClaim,
+    GetObservationsArgs, InMemoryStore, ListMemoriesArgs, ListMemoriesResult, MemoryScope,
+    MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
+    ReflectArgs, ReflectResult, RememberArgs, RememberResult, RerankCandidateInput,
+    RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs, SearchResult,
+    SearchResults, SkillMemory, SlmEngine, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
@@ -78,18 +78,23 @@ fn parse_args<T: serde::de::DeserializeOwned>(
         } else {
             msg
         };
-        rmcp::ErrorData::new(
-            rmcp::model::ErrorCode(-32602),
-            Cow::Owned(hint),
-            None,
-        )
+        rmcp::ErrorData::new(rmcp::model::ErrorCode(-32602), Cow::Owned(hint), None)
     })
 }
 
-fn coerce_arg_types(mut args: serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+fn coerce_arg_types(
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
     let number_keys = [
-        "importance", "min_activation", "tolerance", "strength", "prune_threshold",
-        "limit", "window_secs", "hours", "confidence",
+        "importance",
+        "min_activation",
+        "tolerance",
+        "strength",
+        "prune_threshold",
+        "limit",
+        "window_secs",
+        "hours",
+        "confidence",
     ];
     for key in number_keys {
         if let Some(serde_json::Value::String(s)) = args.get(key) {
@@ -139,6 +144,61 @@ fn tool_not_found() -> rmcp::ErrorData {
     )
 }
 
+fn indexed_content(memory: &CognitiveMemoryUnit) -> String {
+    match memory.model.compressed_content.as_deref() {
+        Some(compressed) if !compressed.is_empty() => format!("{} {}", memory.content, compressed),
+        _ => memory.content.clone(),
+    }
+}
+
+fn memory_matches_scope(
+    memory: &CognitiveMemoryUnit,
+    project_path: Option<&str>,
+    scope_filter: &str,
+) -> bool {
+    match scope_filter {
+        "global" => memory.scope.is_global(),
+        "project" => match memory.scope.project_path() {
+            Some(path) => project_path.map_or(true, |expected| expected == path),
+            None => false,
+        },
+        _ => match (project_path, memory.scope.project_path()) {
+            (Some(expected), Some(path)) => expected == path,
+            (Some(_), None) => memory.scope.is_global(),
+            (None, _) => true,
+        },
+    }
+}
+
+fn heuristic_classification(content: &str) -> (MemoryTier, f32) {
+    let lower = content.to_lowercase();
+    let tier = if lower.contains("always")
+        || lower.contains("preference")
+        || lower.contains("rule")
+        || lower.contains("convention")
+    {
+        MemoryTier::Semantic
+    } else if lower.contains("steps:")
+        || lower.contains("process")
+        || lower.contains("workflow")
+        || lower.contains("how to")
+    {
+        MemoryTier::Procedural
+    } else {
+        MemoryTier::Episodic
+    };
+    let importance = if content.len() > 500 { 0.7 } else { 0.5 };
+    (tier, importance)
+}
+
+fn heuristic_compression(content: &str) -> String {
+    content
+        .split_whitespace()
+        .take(20)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 const MAX_CONTENT_LEN: usize = 10_000;
 const MAX_ASSOCIATIONS: usize = 50;
 
@@ -180,6 +240,7 @@ impl ServerHandler for CogniMemServer {
                         "content": { "type": "string" },
                         "tier": { "type": "string", "enum": TIER_ENUM },
                         "importance": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "scope": { "type": "string", "description": "global or project path" },
                         "associations": { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
                     "required": ["content"]
@@ -193,6 +254,8 @@ impl ServerHandler for CogniMemServer {
                     "properties": {
                         "query": { "type": "string" },
                         "tier": { "type": "string", "enum": TIER_ENUM },
+                        "project_path": { "type": "string" },
+                        "scope_filter": { "type": "string", "enum": ["global", "project", "both"] },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
                         "min_activation": { "type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Minimum activation threshold" }
                     },
@@ -252,6 +315,20 @@ impl ServerHandler for CogniMemServer {
                         "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
                     },
                     "required": ["query"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("list_memories"),
+                Cow::Borrowed("List memories deterministically with optional filters"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tier": { "type": "string", "enum": TIER_ENUM },
+                        "project_path": { "type": "string" },
+                        "scope_filter": { "type": "string", "enum": ["global", "project", "both"] },
+                        "min_activation": { "type": "number", "minimum": 0.0 },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    }
                 })),
             ),
             rmcp::model::Tool::new(
@@ -444,7 +521,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("extract_best_practice"),
-                Cow::Borrowed("Extract coding best practices from content (DRY, KISS, SOLID, YAGNI, Guard Clauses)"),
+                Cow::Borrowed(
+                    "Extract coding best practices from content (DRY, KISS, SOLID, YAGNI, Guard Clauses)",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -496,6 +575,7 @@ impl ServerHandler for CogniMemServer {
             "forget" => self.handle_forget(args).await,
             "reflect" => self.handle_reflect(args).await,
             "search" => self.handle_search(args).await,
+            "list_memories" => self.handle_list_memories(args).await,
             "timeline" => self.handle_timeline(args).await,
             "get_observations" => self.handle_get_observations(args).await,
             "execute_skill" => self.handle_execute_skill(args).await,
@@ -608,42 +688,70 @@ impl CogniMemServer {
         let content = args.content;
         let classify = {
             let guard = self.state.lock().await;
-            guard
+            match guard
                 .slm
                 .classify_memory(ClassifyMemoryInput {
                     content: content.clone(),
                 })
                 .await
-                .map_err(|e| slm_failed("classify_memory", "active", e))?
+            {
+                Ok(classify) => Some(classify),
+                Err(e) => {
+                    tracing::warn!("Falling back to heuristic memory classification: {e}");
+                    None
+                }
+            }
         };
 
-        let tier = args.tier.unwrap_or(classify.tier);
-        let importance = args.importance.unwrap_or(classify.importance);
+        let (fallback_tier, fallback_importance) = heuristic_classification(&content);
+        let tier = args
+            .tier
+            .unwrap_or_else(|| classify.as_ref().map(|c| c.tier).unwrap_or(fallback_tier));
+        let importance = args.importance.unwrap_or_else(|| {
+            classify
+                .as_ref()
+                .map(|c| c.importance)
+                .unwrap_or(fallback_importance)
+        });
         let decay_rate = tier.decay_rate();
 
         let mut memory = CognitiveMemoryUnit::new(content, tier, importance, decay_rate);
+        if let Some(scope) = args.scope.as_deref().and_then(MemoryScope::from_str) {
+            memory.scope = scope;
+        }
         if let Some(assoc_ids) = args.associations {
             memory.associations = assoc_ids;
         }
-        for assoc_id in classify.associations.iter().filter_map(|assoc| assoc.memory_id) {
-            if !memory.associations.contains(&assoc_id) {
-                memory.associations.push(assoc_id);
+        if let Some(classify) = &classify {
+            for assoc_id in classify
+                .associations
+                .iter()
+                .filter_map(|assoc| assoc.memory_id)
+            {
+                if !memory.associations.contains(&assoc_id) {
+                    memory.associations.push(assoc_id);
+                }
             }
+            memory.model.suggested_tier = Some(classify.tier);
+            memory.model.suggested_importance = Some(classify.importance);
+            memory.model.tags = classify.tags.clone();
+            let mut provenance_ids: Vec<uuid::Uuid> = classify
+                .associations
+                .iter()
+                .filter_map(|assoc| assoc.memory_id)
+                .collect();
+            provenance_ids.sort();
+            provenance_ids.dedup();
+            memory.model.provenance_ids = provenance_ids;
+            memory.model.model_name = Some(classify.metadata.model.clone());
+            memory.model.confidence = Some(classify.metadata.confidence);
+            memory.model.suppress = classify.suppress;
+        } else {
+            memory.model.suggested_tier = Some(fallback_tier);
+            memory.model.suggested_importance = Some(fallback_importance);
+            memory.model.model_name = Some("heuristic".to_string());
+            memory.model.confidence = Some(0.2);
         }
-        memory.model.suggested_tier = Some(classify.tier);
-        memory.model.suggested_importance = Some(classify.importance);
-        memory.model.tags = classify.tags;
-        let mut provenance_ids: Vec<uuid::Uuid> = classify
-            .associations
-            .iter()
-            .filter_map(|assoc| assoc.memory_id)
-            .collect();
-        provenance_ids.sort();
-        provenance_ids.dedup();
-        memory.model.provenance_ids = provenance_ids;
-        memory.model.model_name = Some(classify.metadata.model);
-        memory.model.confidence = Some(classify.metadata.confidence);
-        memory.model.suppress = classify.suppress;
 
         let memory_id = memory.id;
         let mut guard = self.state.lock().await;
@@ -664,24 +772,27 @@ impl CogniMemServer {
         }
 
         guard.graph.add_memory(memory.clone());
-        let compressed = guard
+        let compressed = match guard
             .slm
             .compress_memory(CompressMemoryInput {
                 content: memory.content.clone(),
                 tier_hint: Some(memory.tier),
             })
             .await
-            .map_err(|e| slm_failed("compress_memory", guard.slm.model_name(), e))?
-            .summary;
+        {
+            Ok(output) => output.summary,
+            Err(e) => {
+                tracing::warn!("Falling back to heuristic compression: {e}");
+                heuristic_compression(&memory.content)
+            }
+        };
         if let Some(stored_memory) = guard.graph.get_memory_mut(&memory_id) {
             stored_memory.model.compressed_content = Some(compressed.clone());
         }
         memory.model.compressed_content = Some(compressed.clone());
-        guard.search.index(
-            memory_id,
-            &format!("{} {}", memory.content, compressed),
-            memory.tier,
-        );
+        guard
+            .search
+            .index(memory_id, &indexed_content(&memory), memory.tier);
         let embedding = guard.embedder.embed(&memory.content);
         guard.graph.set_embedding(memory_id, embedding);
         if let Err(e) = guard.storage.save(&memory) {
@@ -710,14 +821,19 @@ impl CogniMemServer {
             .await
             .map_err(|e| slm_failed("distill_skill", slm.model_name(), e))?
             {
-                let skill_compressed = slm
+                let skill_compressed = match slm
                     .compress_memory(CompressMemoryInput {
                         content: skill_memory.content.clone(),
                         tier_hint: Some(skill_memory.tier),
                     })
                     .await
-                    .map_err(|e| slm_failed("compress_memory", slm.model_name(), e))?
-                    .summary;
+                {
+                    Ok(output) => output.summary,
+                    Err(e) => {
+                        tracing::warn!("Falling back to heuristic skill compression: {e}");
+                        heuristic_compression(&skill_memory.content)
+                    }
+                };
                 search.index(skill_memory.id, &skill_compressed, skill_memory.tier);
                 if let Err(e) = storage.save(&skill_memory) {
                     error!("Failed to persist skill memory {}: {e}", skill_memory.id);
@@ -752,17 +868,16 @@ impl CogniMemServer {
         let limit = args.limit.unwrap_or(5);
         let min_activation = args.min_activation.unwrap_or(0.0);
         let now = chrono::Utc::now().timestamp();
-        let _project_path = args.project_path.clone();
-        let scope_filter = args.scope_filter.clone().unwrap_or_else(|| "both".to_string());
+        let project_path = args.project_path.clone();
+        let scope_filter = args
+            .scope_filter
+            .clone()
+            .unwrap_or_else(|| "both".to_string());
 
         let mut guard = self.state.lock().await;
 
-        let scope_matches = |scope: &MemoryScope| -> bool {
-            match scope_filter.as_str() {
-                "global" => scope.is_global(),
-                "project" => !scope.is_global(),
-                _ => true,
-            }
+        let scope_matches = |memory: &CognitiveMemoryUnit| -> bool {
+            memory_matches_scope(memory, project_path.as_deref(), &scope_filter)
         };
 
         let query_emb = guard.embedder.embed(&query);
@@ -779,6 +894,7 @@ impl CogniMemServer {
             .filter(|m| {
                 cognimem_server::search::matches_query(&m.content, &query)
                     && m.metadata.base_activation >= min_activation
+                    && scope_matches(m)
             })
             .collect();
             fallback.sort_by(|a, b| {
@@ -803,13 +919,13 @@ impl CogniMemServer {
         let mut results: Vec<&CognitiveMemoryUnit> = fused
             .iter()
             .filter_map(|(id, _)| guard.graph.get_memory(id))
-            .filter(|m| {
-                m.metadata.base_activation >= min_activation && scope_matches(&m.scope)
-            })
+            .filter(|m| m.metadata.base_activation >= min_activation && scope_matches(m))
             .collect();
 
         let direct_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
         expand_with_associations(&direct_ids, &mut results, &guard.graph);
+        results.retain(|m| m.metadata.base_activation >= min_activation && scope_matches(m));
+        dedup_memories(&mut results);
 
         results.sort_by(|a, b| {
             b.metadata
@@ -827,7 +943,7 @@ impl CogniMemServer {
                     initial_score: m.metadata.base_activation,
                 })
                 .collect();
-            let ranked_ids = guard
+            let ranked_ids = match guard
                 .slm
                 .rerank_candidates(RerankCandidatesInput {
                     query: query.clone(),
@@ -835,47 +951,40 @@ impl CogniMemServer {
                     top_n: limit,
                 })
                 .await
-                .map_err(|e| slm_failed("rerank_candidates", guard.slm.model_name(), e))?
-                .ranked_ids;
+            {
+                Ok(output) => output.ranked_ids,
+                Err(e) => {
+                    tracing::warn!("Falling back to deterministic reranking: {e}");
+                    Vec::new()
+                }
+            };
 
             if ranked_ids.is_empty() {
-                return Err(slm_failed(
-                    "rerank_candidates",
-                    guard.slm.model_name(),
-                    SlmError::ValidationFailed(
-                        "rerank returned no IDs for non-empty candidate set".to_string(),
-                    ),
-                ));
-            }
-
-            let candidate_ids: std::collections::HashSet<uuid::Uuid> =
-                candidates.iter().map(|candidate| candidate.id).collect();
-            let mut seen = std::collections::HashSet::new();
-            for id in &ranked_ids {
-                if !candidate_ids.contains(id) {
-                    return Err(slm_failed(
-                        "rerank_candidates",
-                        guard.slm.model_name(),
-                        SlmError::ValidationFailed(format!(
-                            "rerank returned unknown candidate id {id}"
-                        )),
-                    ));
+                Vec::new()
+            } else {
+                let candidate_ids: std::collections::HashSet<uuid::Uuid> =
+                    candidates.iter().map(|candidate| candidate.id).collect();
+                let mut seen = std::collections::HashSet::new();
+                let mut is_valid = true;
+                for id in &ranked_ids {
+                    if !candidate_ids.contains(id) || !seen.insert(*id) {
+                        is_valid = false;
+                        break;
+                    }
                 }
-                if !seen.insert(*id) {
-                    return Err(slm_failed(
-                        "rerank_candidates",
-                        guard.slm.model_name(),
-                        SlmError::ValidationFailed(format!(
-                            "rerank returned duplicate candidate id {id}"
-                        )),
-                    ));
+
+                if !is_valid {
+                    tracing::warn!("Falling back to deterministic reranking after invalid SLM IDs");
+                    Vec::new()
+                } else {
+                    ranked_ids
+                        .iter()
+                        .filter_map(|id| {
+                            candidates.iter().position(|candidate| &candidate.id == id)
+                        })
+                        .collect()
                 }
             }
-
-            ranked_ids
-                .iter()
-                .filter_map(|id| candidates.iter().position(|candidate| &candidate.id == id))
-                .collect()
         };
         if !slm_results.is_empty() {
             let reranked: Vec<&CognitiveMemoryUnit> = slm_results
@@ -994,6 +1103,9 @@ impl CogniMemServer {
             let pruned_ids = prune_below_threshold(graph, 0.01);
             for id in &pruned_ids {
                 search.remove(id);
+                if let Err(e) = storage.delete(id) {
+                    error!("Failed to delete pruned memory {}: {e}", id);
+                }
             }
 
             let conflicts = consolidate(graph, embedder.as_ref());
@@ -1015,8 +1127,11 @@ impl CogniMemServer {
                     memory_b_content: b.to_string(),
                 })
                 .await
-                .map_err(|e| slm_failed("resolve_conflict", slm.model_name(), e))?
-                .action
+                .map(|output| output.action)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Falling back to keep_both conflict resolution: {e}");
+                    cognimem_server::memory::ConflictResolution::KeepBoth
+                })
             } else {
                 strategy
             };
@@ -1031,6 +1146,7 @@ impl CogniMemServer {
             let promoted = promote_memories(graph);
 
             for mem in graph.get_all_memories() {
+                search.index(mem.id, &indexed_content(mem), mem.tier);
                 if let Err(e) = storage.save(mem) {
                     error!("Failed to persist reflected memory {}: {e}", mem.id);
                 }
@@ -1051,6 +1167,7 @@ impl CogniMemServer {
             let conflicts = detect_conflicts(graph, embedder.as_ref());
 
             for mem in graph.get_all_memories() {
+                search.index(mem.id, &indexed_content(mem), mem.tier);
                 if let Err(e) = storage.save(mem) {
                     error!("Failed to persist reflected memory {}: {e}", mem.id);
                 }
@@ -1124,6 +1241,39 @@ impl CogniMemServer {
 
         inc_recall();
         Ok(success_json(&SearchResults::new(search_results)))
+    }
+
+    async fn handle_list_memories(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: ListMemoriesArgs = parse_args(args)?;
+        let limit = args.limit.unwrap_or(100);
+        let min_activation = args.min_activation.unwrap_or(0.0);
+        let scope_filter = args.scope_filter.unwrap_or_else(|| "both".to_string());
+
+        let guard = self.state.lock().await;
+        let mut memories: Vec<MemorySummary> = match args.tier {
+            Some(tier) => guard.graph.get_by_tier(tier),
+            None => guard.graph.get_all_memories(),
+        }
+        .into_iter()
+        .filter(|memory| {
+            memory.metadata.base_activation >= min_activation
+                && memory_matches_scope(memory, args.project_path.as_deref(), &scope_filter)
+        })
+        .map(MemorySummary::from)
+        .collect();
+
+        memories.sort_by(|a, b| {
+            b.activation
+                .partial_cmp(&a.activation)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        memories.truncate(limit);
+
+        Ok(success_json(&ListMemoriesResult::new(memories)))
     }
 
     async fn handle_timeline(
@@ -1254,7 +1404,7 @@ impl CogniMemServer {
                 .iter()
                 .filter_map(|a| guard.graph.get_memory(&a.id).map(|m| m.content.as_str()))
                 .collect();
-            candidate.memory.content = guard
+            if let Ok(output) = guard
                 .slm
                 .complete_pattern(CompletePatternInput {
                     cue: candidate.memory.content.clone(),
@@ -1264,8 +1414,9 @@ impl CogniMemServer {
                         .collect(),
                 })
                 .await
-                .map_err(|e| slm_failed("complete_pattern", guard.slm.model_name(), e))?
-                .completed_text;
+            {
+                candidate.memory.content = output.completed_text;
+            }
         }
 
         Ok(success_json(&CompletePatternResult { candidates }))
@@ -1290,14 +1441,19 @@ impl CogniMemServer {
             .collect();
 
         let profiles = if semantic_memories.len() >= 3 {
-            guard
+            match guard
                 .slm
                 .extract_persona(ExtractPersonaInput {
                     memories: semantic_memories,
                 })
                 .await
-                .map_err(|e| slm_failed("extract_persona", guard.slm.model_name(), e))?
-                .profiles
+            {
+                Ok(output) => output.profiles,
+                Err(e) => {
+                    tracing::warn!("Falling back to heuristic persona extraction: {e}");
+                    extract_persona(&guard.graph)
+                }
+            }
         } else {
             extract_persona(&guard.graph)
         };
@@ -1354,10 +1510,12 @@ impl CogniMemServer {
         let memory_id = uuid::Uuid::parse_str(
             args.get("memory_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("memory_id is required"))?
-        ).map_err(|_| invalid_params("Invalid memory_id format"))?;
+                .ok_or_else(|| invalid_params("memory_id is required"))?,
+        )
+        .map_err(|_| invalid_params("Invalid memory_id format"))?;
 
-        let claim_type_str = args.get("claim_type")
+        let claim_type_str = args
+            .get("claim_type")
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("claim_type is required"))?;
         let claim_type = match claim_type_str {
@@ -1365,25 +1523,31 @@ impl CogniMemServer {
             "implementation" => ClaimType::Implementation,
             "testing" => ClaimType::Testing,
             "review" => ClaimType::Review,
-            _ => return Err(invalid_params("Invalid claim_type. Must be: research, implementation, testing, or review")),
+            _ => {
+                return Err(invalid_params(
+                    "Invalid claim_type. Must be: research, implementation, testing, or review",
+                ));
+            }
         };
-        let hours = args.get("hours")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(24);
+        let hours = args.get("hours").and_then(|v| v.as_i64()).unwrap_or(24);
 
         let mut guard = self.state.lock().await;
 
-        let session_id = guard.session_context.as_ref()
+        let session_id = guard
+            .session_context
+            .as_ref()
             .map(|s| s.session_id)
             .unwrap_or_else(uuid::Uuid::new_v4);
 
         if let Some(existing) = guard.work_claims.get(&memory_id)
-            && existing.status == ClaimStatus::Active && !existing.is_expired() {
-                return Err(invalid_params(&format!(
-                    "Memory {} is already claimed by session {}",
-                    memory_id, existing.session_id
-                )));
-            }
+            && existing.status == ClaimStatus::Active
+            && !existing.is_expired()
+        {
+            return Err(invalid_params(&format!(
+                "Memory {} is already claimed by session {}",
+                memory_id, existing.session_id
+            )));
+        }
 
         let claim = WorkClaim::new(memory_id, session_id, claim_type, hours);
         let claim_clone = claim.clone();
@@ -1406,16 +1570,20 @@ impl CogniMemServer {
         let memory_id = uuid::Uuid::parse_str(
             args.get("memory_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("memory_id is required"))?
-        ).map_err(|_| invalid_params("Invalid memory_id format"))?;
+                .ok_or_else(|| invalid_params("memory_id is required"))?,
+        )
+        .map_err(|_| invalid_params("Invalid memory_id format"))?;
 
-        let complete = args.get("complete")
+        let complete = args
+            .get("complete")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         let mut guard = self.state.lock().await;
 
-        let claim = guard.work_claims.get_mut(&memory_id)
+        let claim = guard
+            .work_claims
+            .get_mut(&memory_id)
             .ok_or_else(|| invalid_params(&format!("No claim found for memory {}", memory_id)))?;
 
         if complete {
@@ -1442,37 +1610,38 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let project_path = args.get("project_path")
+        let project_path = args
+            .get("project_path")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let limit = args.get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         let guard = self.state.lock().await;
 
         let mut available: Vec<serde_json::Value> = Vec::new();
 
         for (id, claim) in &guard.work_claims {
-            if claim.status == ClaimStatus::Active && claim.is_expired()
-                && let Some(mem) = guard.graph.get_memory(id) {
-                    if let Some(ref pp) = project_path {
-                        if let Some(ref mem_pp) = mem.scope.project_path() {
-                            if mem_pp != pp {
-                                continue;
-                            }
-                        } else {
+            if claim.status == ClaimStatus::Active
+                && claim.is_expired()
+                && let Some(mem) = guard.graph.get_memory(id)
+            {
+                if let Some(ref pp) = project_path {
+                    if let Some(ref mem_pp) = mem.scope.project_path() {
+                        if mem_pp != pp {
                             continue;
                         }
+                    } else {
+                        continue;
                     }
-                    available.push(serde_json::json!({
-                        "memory_id": mem.id,
-                        "content": mem.content.chars().take(200).collect::<String>(),
-                        "tier": mem.tier.to_string(),
-                        "claim_type": claim.claim_type.to_string(),
-                        "expired_at": claim.leased_until
-                    }));
                 }
+                available.push(serde_json::json!({
+                    "memory_id": mem.id,
+                    "content": mem.content.chars().take(200).collect::<String>(),
+                    "tier": mem.tier.to_string(),
+                    "claim_type": claim.claim_type.to_string(),
+                    "expired_at": claim.leased_until
+                }));
+            }
         }
 
         available.truncate(limit);
@@ -1489,23 +1658,39 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         use cognimem_server::memory::slm_types::SummarizeTurnInput;
 
-        let turns = args.get("turns")
+        let turns = args
+            .get("turns")
             .and_then(|v| v.as_array())
             .ok_or_else(|| invalid_params("turns is required"))?
             .iter()
             .map(|v| {
-                let turn_id = v.get("turn_id")
+                let turn_id = v
+                    .get("turn_id")
                     .and_then(|x| x.as_str())
                     .and_then(|s| uuid::Uuid::parse_str(s).ok())
                     .unwrap_or_else(uuid::Uuid::new_v4);
-                let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                let tool_usage: Vec<String> = v.get("tool_usage")
+                let content = v
+                    .get("content")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_usage: Vec<String> = v
+                    .get("tool_usage")
                     .and_then(|x| x.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let decisions: Vec<String> = v.get("decisions")
+                let decisions: Vec<String> = v
+                    .get("decisions")
                     .and_then(|x| x.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 cognimem_server::memory::slm_types::TurnSummary {
                     turn_id,
@@ -1518,9 +1703,16 @@ impl CogniMemServer {
 
         let input = SummarizeTurnInput { turns };
         let guard = self.state.lock().await;
-        let output = guard.slm.summarize_turn(input)
-            .await
-            .map_err(|e| slm_failed("summarize_turn", guard.slm.model_name(), e))?;
+        let output = match guard.slm.summarize_turn(input.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("Falling back to noop summarize_turn: {e}");
+                cognimem_server::memory::NoOpSlm
+                    .summarize_turn(input)
+                    .await
+                    .map_err(|fallback| slm_failed("summarize_turn", "noop", fallback))?
+            }
+        };
 
         Ok(success_json(&output))
     }
@@ -1531,48 +1723,84 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         use cognimem_server::memory::slm_types::{SummarizeSessionInput, TaskSummary};
 
-        let turns: Vec<_> = args.get("turns")
+        let turns: Vec<_> = args
+            .get("turns")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                arr.iter().map(|v| {
-                    let turn_id = v.get("turn_id")
-                        .and_then(|x| x.as_str())
-                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                        .unwrap_or_else(uuid::Uuid::new_v4);
-                    let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    cognimem_server::memory::slm_types::TurnSummary {
-                        turn_id,
-                        content,
-                        tool_usage: Vec::new(),
-                        decisions: Vec::new(),
-                    }
-                }).collect()
+                arr.iter()
+                    .map(|v| {
+                        let turn_id = v
+                            .get("turn_id")
+                            .and_then(|x| x.as_str())
+                            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                            .unwrap_or_else(uuid::Uuid::new_v4);
+                        let content = v
+                            .get("content")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        cognimem_server::memory::slm_types::TurnSummary {
+                            turn_id,
+                            content,
+                            tool_usage: Vec::new(),
+                            decisions: Vec::new(),
+                        }
+                    })
+                    .collect()
             })
             .unwrap_or_default();
 
-        let completed_tasks: Vec<TaskSummary> = args.get("completed_tasks")
+        let completed_tasks: Vec<TaskSummary> = args
+            .get("completed_tasks")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                arr.iter().filter_map(|v| {
-                    Some(TaskSummary {
-                        task_id: v.get("task_id").and_then(|x| x.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok()),
-                        title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                        status: v.get("status").and_then(|x| x.as_str()).unwrap_or("completed").to_string(),
+                arr.iter()
+                    .filter_map(|v| {
+                        Some(TaskSummary {
+                            task_id: v
+                                .get("task_id")
+                                .and_then(|x| x.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok()),
+                            title: v
+                                .get("title")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            status: v
+                                .get("status")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("completed")
+                                .to_string(),
+                        })
                     })
-                }).collect()
+                    .collect()
             })
             .unwrap_or_default();
 
-        let open_tasks: Vec<TaskSummary> = args.get("open_tasks")
+        let open_tasks: Vec<TaskSummary> = args
+            .get("open_tasks")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                arr.iter().filter_map(|v| {
-                    Some(TaskSummary {
-                        task_id: v.get("task_id").and_then(|x| x.as_str()).and_then(|s| uuid::Uuid::parse_str(s).ok()),
-                        title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                        status: v.get("status").and_then(|x| x.as_str()).unwrap_or("open").to_string(),
+                arr.iter()
+                    .filter_map(|v| {
+                        Some(TaskSummary {
+                            task_id: v
+                                .get("task_id")
+                                .and_then(|x| x.as_str())
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok()),
+                            title: v
+                                .get("title")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            status: v
+                                .get("status")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("open")
+                                .to_string(),
+                        })
                     })
-                }).collect()
+                    .collect()
             })
             .unwrap_or_default();
 
@@ -1582,9 +1810,16 @@ impl CogniMemServer {
             open_tasks,
         };
         let guard = self.state.lock().await;
-        let output = guard.slm.summarize_session(input)
-            .await
-            .map_err(|e| slm_failed("summarize_session", guard.slm.model_name(), e))?;
+        let output = match guard.slm.summarize_session(input.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("Falling back to noop summarize_session: {e}");
+                cognimem_server::memory::NoOpSlm
+                    .summarize_session(input)
+                    .await
+                    .map_err(|fallback| slm_failed("summarize_session", "noop", fallback))?
+            }
+        };
 
         Ok(success_json(&output))
     }
@@ -1595,17 +1830,28 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
 
-        let content = args.get("content")
+        let content = args
+            .get("content")
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("content is required"))?
             .to_string();
-        let context = args.get("context").and_then(|v| v.as_str()).map(String::from);
+        let context = args
+            .get("context")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let input = ExtractBestPracticeInput { content, context };
         let guard = self.state.lock().await;
-        let output = guard.slm.extract_best_practice(input)
-            .await
-            .map_err(|e| slm_failed("extract_best_practice", guard.slm.model_name(), e))?;
+        let output = match guard.slm.extract_best_practice(input.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("Falling back to noop extract_best_practice: {e}");
+                cognimem_server::memory::NoOpSlm
+                    .extract_best_practice(input)
+                    .await
+                    .map_err(|fallback| slm_failed("extract_best_practice", "noop", fallback))?
+            }
+        };
 
         Ok(success_json(&output))
     }
@@ -1614,7 +1860,8 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let project_path = args.get("project_path")
+        let project_path = args
+            .get("project_path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("project_path is required"))?
             .to_string();
@@ -1645,6 +1892,11 @@ fn expand_with_associations<'a>(
     }
 }
 
+fn dedup_memories(results: &mut Vec<&CognitiveMemoryUnit>) {
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|memory| seen.insert(memory.id));
+}
+
 fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64) {
     for id in ids {
         if let Some(mem) = guard.graph.get_memory_mut(id) {
@@ -1658,7 +1910,10 @@ fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64
     }
 }
 
-fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_server::memory::PersonaProfile]) {
+fn persist_persona_profiles(
+    guard: &mut CogniMemState,
+    profiles: &[cognimem_server::memory::PersonaProfile],
+) {
     let persona_ids: std::collections::HashSet<uuid::Uuid> = guard
         .graph
         .get_by_tier(MemoryTier::Semantic)
@@ -1700,7 +1955,9 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
                 memory.model.provenance_ids = clean_source_ids.clone();
             }
             guard.search.remove(&memory_id);
-            guard.search.index(memory_id, &content, MemoryTier::Semantic);
+            guard
+                .search
+                .index(memory_id, &content, MemoryTier::Semantic);
             let embedding = guard.embedder.embed(&content);
             guard.graph.set_embedding(memory_id, embedding);
             if let Some(memory) = guard.graph.get_memory(&memory_id)
@@ -1727,7 +1984,9 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
         let embedding = guard.embedder.embed(&content);
         guard.graph.add_memory(memory.clone());
         guard.graph.set_embedding(memory_id, embedding);
-        guard.search.index(memory_id, &content, MemoryTier::Semantic);
+        guard
+            .search
+            .index(memory_id, &content, MemoryTier::Semantic);
         if let Err(e) = guard.storage.save(&memory) {
             error!("Failed to persist persona memory {}: {e}", memory_id);
         }
@@ -1736,9 +1995,9 @@ fn persist_persona_profiles(guard: &mut CogniMemState, profiles: &[cognimem_serv
 
 fn slm_failed(operation: &str, model: &str, err: SlmError) -> rmcp::ErrorData {
     let hint = match &err {
-        SlmError::RequestFailed(msg) => format!(
-            "Ollama request failed: {msg}. Is Ollama running? Try: ollama serve"
-        ),
+        SlmError::RequestFailed(msg) => {
+            format!("Ollama request failed: {msg}. Is Ollama running? Try: ollama serve")
+        }
         SlmError::InvalidResponse(msg) => format!(
             "Ollama returned unparseable output: {msg}. The model may have emitted thinking tokens or malformed JSON. Try a simpler query or check that model '{model}' is pulled."
         ),
@@ -1746,11 +2005,7 @@ fn slm_failed(operation: &str, model: &str, err: SlmError) -> rmcp::ErrorData {
             "Ollama output failed validation: {msg}. The model returned structurally invalid data for operation '{operation}'."
         ),
     };
-    rmcp::ErrorData::new(
-        rmcp::model::ErrorCode(-32000),
-        Cow::Owned(hint),
-        None,
-    )
+    rmcp::ErrorData::new(rmcp::model::ErrorCode(-32000), Cow::Owned(hint), None)
 }
 
 async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_threshold: f32) {
@@ -1763,6 +2018,9 @@ async fn decay_task(state: Arc<Mutex<CogniMemState>>, interval: Duration, prune_
         if !pruned.is_empty() {
             for id in &pruned {
                 guard.search.remove(id);
+                if let Err(e) = guard.storage.delete(id) {
+                    error!("Failed to delete pruned memory {}: {e}", id);
+                }
             }
             tracing::info!(
                 "Pruned {} memories below activation threshold",
@@ -1793,7 +2051,7 @@ async fn consolidation_task(
         let resolved = resolve_conflicts(
             graph,
             &conflicts,
-            &cognimem_server::memory::ConflictResolution::LatestWins,
+            &cognimem_server::memory::ConflictResolution::KeepBoth,
         );
         for id in &resolved {
             search.remove(id);
@@ -1812,6 +2070,7 @@ async fn consolidation_task(
         }
 
         for memory in graph.get_all_memories() {
+            search.index(memory.id, &indexed_content(memory), memory.tier);
             if let Err(e) = storage.save(memory) {
                 error!("Failed to persist consolidated memory {}: {e}", memory.id);
             }
@@ -1880,7 +2139,11 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "memory" => Box::new(InMemoryStore::new()),
         _ => Box::new(RocksDbStore::open(Path::new(&cli.data_path))?),
     };
-    let state = Arc::new(Mutex::new(CogniMemState::new(storage, cli.ollama_model.clone(), cli.ollama_url.clone())));
+    let state = Arc::new(Mutex::new(CogniMemState::new(
+        storage,
+        cli.ollama_model.clone(),
+        cli.ollama_url.clone(),
+    )));
     {
         let guard = state.lock().await;
         set_memory_count(guard.graph.len() as u64);

@@ -99,7 +99,9 @@ pub fn apply_stdp(graph: &mut MemoryGraph, source_id: &Uuid, target_id: &Uuid, n
 
     let time_diff = (now - source_ts).abs();
     let strengthen = time_diff < STDP_STRENGTHEN_WINDOW;
-    let current = graph.get_association_strength(source_id, target_id).unwrap_or(0.5);
+    let current = graph
+        .get_association_strength(source_id, target_id)
+        .unwrap_or(0.5);
 
     let new_strength = if strengthen {
         (current + 0.1).min(1.0)
@@ -112,7 +114,10 @@ pub fn apply_stdp(graph: &mut MemoryGraph, source_id: &Uuid, target_id: &Uuid, n
     graph.update_association(source_id, target_id, new_strength);
 }
 
-pub fn rank_by_timescale(graph: &mut MemoryGraph, query_weights: Vec<(Uuid, f32)>) -> Vec<(Uuid, f32)> {
+pub fn rank_by_timescale(
+    graph: &mut MemoryGraph,
+    query_weights: Vec<(Uuid, f32)>,
+) -> Vec<(Uuid, f32)> {
     let now = Utc::now().timestamp();
     let manager = DualTimescaleManager::new();
 
@@ -139,10 +144,22 @@ mod tests {
 
     #[test]
     fn test_timescale_from_tier() {
-        assert_eq!(TimescaleKind::from_tier(MemoryTier::Sensory), TimescaleKind::Fast);
-        assert_eq!(TimescaleKind::from_tier(MemoryTier::Working), TimescaleKind::Fast);
-        assert_eq!(TimescaleKind::from_tier(MemoryTier::Episodic), TimescaleKind::Slow);
-        assert_eq!(TimescaleKind::from_tier(MemoryTier::Semantic), TimescaleKind::Slow);
+        assert_eq!(
+            TimescaleKind::from_tier(MemoryTier::Sensory),
+            TimescaleKind::Fast
+        );
+        assert_eq!(
+            TimescaleKind::from_tier(MemoryTier::Working),
+            TimescaleKind::Fast
+        );
+        assert_eq!(
+            TimescaleKind::from_tier(MemoryTier::Episodic),
+            TimescaleKind::Slow
+        );
+        assert_eq!(
+            TimescaleKind::from_tier(MemoryTier::Semantic),
+            TimescaleKind::Slow
+        );
     }
 
     #[test]

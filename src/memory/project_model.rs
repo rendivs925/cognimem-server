@@ -122,12 +122,30 @@ pub fn detect_convention_patterns(memories: &[&CognitiveMemoryUnit]) -> Vec<Proj
     let mut seen_names = std::collections::HashSet::new();
 
     let patterns = [
-        ("Test pattern", vec!["test", "spec", "__tests__", ".test.", ".spec."]),
-        ("Config format", vec!["config", ".json", ".yaml", ".yml", ".toml", ".config"]),
-        ("Build tool", vec!["cargo", "npm", "make", "cmake", "gradle", "webpack"]),
-        ("Package manager", vec!["package.json", "Cargo.toml", "requirements.txt", "go.mod"]),
-        ("Code style", vec!["prettier", "eslint", "rustfmt", "gofmt", "black"]),
-        ("Test framework", vec!["jest", "pytest", "rspec", "junit", "mocha"]),
+        (
+            "Test pattern",
+            vec!["test", "spec", "__tests__", ".test.", ".spec."],
+        ),
+        (
+            "Config format",
+            vec!["config", ".json", ".yaml", ".yml", ".toml", ".config"],
+        ),
+        (
+            "Build tool",
+            vec!["cargo", "npm", "make", "cmake", "gradle", "webpack"],
+        ),
+        (
+            "Package manager",
+            vec!["package.json", "Cargo.toml", "requirements.txt", "go.mod"],
+        ),
+        (
+            "Code style",
+            vec!["prettier", "eslint", "rustfmt", "gofmt", "black"],
+        ),
+        (
+            "Test framework",
+            vec!["jest", "pytest", "rspec", "junit", "mocha"],
+        ),
     ];
 
     for mem in memories {
@@ -141,7 +159,11 @@ pub fn detect_convention_patterns(memories: &[&CognitiveMemoryUnit]) -> Vec<Proj
                         seen_names.insert(*name);
                         conventions.push(ProjectConvention {
                             name: name.to_string(),
-                            description: format!("Project uses '{}' for {}", keyword, name.to_lowercase()),
+                            description: format!(
+                                "Project uses '{}' for {}",
+                                keyword,
+                                name.to_lowercase()
+                            ),
                             source_memory_ids: vec![id],
                             confidence: 0.7,
                         });

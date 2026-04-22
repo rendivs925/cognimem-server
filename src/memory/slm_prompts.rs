@@ -23,7 +23,12 @@ pub fn rerank_candidates_prompt(input: &RerankCandidatesInput) -> String {
     let candidates = input
         .candidates
         .iter()
-        .map(|c| format!("- id={} score={} content={}", c.id, c.initial_score, c.content))
+        .map(|c| {
+            format!(
+                "- id={} score={} content={}",
+                c.id, c.initial_score, c.content
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!(
@@ -72,7 +77,12 @@ pub fn summarize_turn_prompt(input: &SummarizeTurnInput) -> String {
     let turns = input
         .turns
         .iter()
-        .map(|t| format!("Turn {}: {} [tools: {:?}]", t.turn_id, t.content, t.tool_usage))
+        .map(|t| {
+            format!(
+                "Turn {}: {} [tools: {:?}]",
+                t.turn_id, t.content, t.tool_usage
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!(
@@ -109,6 +119,9 @@ pub fn summarize_session_prompt(input: &SummarizeSessionInput) -> String {
 pub fn extract_best_practice_prompt(input: &ExtractBestPracticeInput) -> String {
     format!(
         "You are extracting coding best practices using model {}. Return only valid JSON. Schema: {{\"practices\":[{{\"principle\":\"DRY|KISS|SOLID|YAGNI|GuardClauses|DesignPatterns\",\"description\":\"string\",\"applies_to\":[\"string\"],\"example\":\"string or null\"}}],\"confidence\":0.0,\"should_persist\":false,\"metadata\":{{\"model\":\"{}\",\"confidence\":0.0}}}}. Content: {}. Context: {}",
-        DEFAULT_SLM_MODEL, DEFAULT_SLM_MODEL, input.content, input.context.as_deref().unwrap_or("none")
+        DEFAULT_SLM_MODEL,
+        DEFAULT_SLM_MODEL,
+        input.content,
+        input.context.as_deref().unwrap_or("none")
     )
 }

@@ -34,10 +34,15 @@ pub async fn detect_and_create_skill(
         .chain(std::iter::once(new_content))
         .collect();
 
-    let examples: Vec<String> = all_contents.iter().map(|content| (*content).to_string()).collect();
-    let distilled = slm.distill_skill(DistillSkillInput {
-        examples: examples.clone(),
-    }).await?;
+    let examples: Vec<String> = all_contents
+        .iter()
+        .map(|content| (*content).to_string())
+        .collect();
+    let distilled = slm
+        .distill_skill(DistillSkillInput {
+            examples: examples.clone(),
+        })
+        .await?;
     let skill_name = if distilled.name.trim().is_empty() {
         extract_skill_name(&all_contents)
     } else {

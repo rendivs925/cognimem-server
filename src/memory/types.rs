@@ -88,8 +88,7 @@ impl MemoryTier {
 }
 
 /// Memory scope determines whether a memory is global or project-specific.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MemoryScope {
     /// Applies to all projects and sessions.
     #[default]
@@ -113,7 +112,6 @@ impl MemoryScope {
     }
 }
 
-
 impl MemoryScope {
     /// Parses scope from string: "global" → Global, "/path" → Project(path)
     pub fn from_str(s: &str) -> Option<Self> {
@@ -121,7 +119,9 @@ impl MemoryScope {
         if s.eq_ignore_ascii_case("global") {
             Some(MemoryScope::Global)
         } else if s.starts_with('/') || s.starts_with("~") {
-            Some(MemoryScope::Project { project_path: s.to_string() })
+            Some(MemoryScope::Project {
+                project_path: s.to_string(),
+            })
         } else {
             None
         }
@@ -237,11 +237,13 @@ impl MemoryMetadata {
     /// The salience factor modulates decay - higher salience = slower decay = more durable memory.
     pub fn update_activation(&mut self, now: i64) {
         if self.rehearsal_history.is_empty() {
-            self.rehearsal_history.push(self.last_accessed.max(self.created_at));
+            self.rehearsal_history
+                .push(self.last_accessed.max(self.created_at));
         }
         let decay = self.decay_rate as f64;
         let salience = self.salience as f64;
-        let summed: f64 = self.rehearsal_history
+        let summed: f64 = self
+            .rehearsal_history
             .iter()
             .map(|&timestamp| {
                 let elapsed = (now - timestamp).max(0) as f64 + 1.0;
@@ -612,6 +614,39 @@ pub struct SearchArgs {
     /// Optional maximum number of results.
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+/// Arguments for deterministic memory listing.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListMemoriesArgs {
+    /// Optional tier filter.
+    #[serde(default)]
+    pub tier: Option<MemoryTier>,
+    /// Optional project path filter for project-scoped memories.
+    #[serde(default)]
+    pub project_path: Option<String>,
+    /// Optional scope filter: `global`, `project`, or `both`.
+    #[serde(default)]
+    pub scope_filter: Option<String>,
+    /// Optional minimum activation threshold.
+    #[serde(default)]
+    pub min_activation: Option<f32>,
+    /// Optional maximum number of results.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Deterministic listing results for memories.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListMemoriesResult {
+    /// The matched memories in deterministic order.
+    pub memories: Vec<MemorySummary>,
+}
+
+impl ListMemoriesResult {
+    pub fn new(memories: Vec<MemorySummary>) -> Self {
+        Self { memories }
+    }
 }
 
 /// A single search result item.
@@ -1049,7 +1084,12 @@ impl ProjectModel {
         self.updated_at = Utc::now().timestamp();
     }
 
-    pub fn add_architecture_note(&mut self, component: String, description: String, relationships: Vec<String>) {
+    pub fn add_architecture_note(
+        &mut self,
+        component: String,
+        description: String,
+        relationships: Vec<String>,
+    ) {
         self.architecture.push(ProjectArchitecture {
             component,
             description,

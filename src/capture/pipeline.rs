@@ -4,8 +4,8 @@ use crate::memory::types::{CognitiveMemoryUnit, MemoryScope, MemoryTier};
 use crate::state::CogniMemState;
 use chrono::Utc;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
 const MAX_CONTENT_BYTES: usize = 100_000;
@@ -268,7 +268,10 @@ impl CapturePipeline {
                 .await
                 .ok();
 
-            let tier = classify_result.as_ref().map(|c| c.tier).unwrap_or(MemoryTier::Sensory);
+            let tier = classify_result
+                .as_ref()
+                .map(|c| c.tier)
+                .unwrap_or(MemoryTier::Sensory);
             let importance = classify_result
                 .as_ref()
                 .map(|c| c.importance)
@@ -291,7 +294,9 @@ impl CapturePipeline {
                 .map(|c| c.metadata.confidence)
                 .unwrap_or(0.0);
 
-            (tier, importance, tags, suppress, compressed, model_name, confidence)
+            (
+                tier, importance, tags, suppress, compressed, model_name, confidence,
+            )
         };
 
         if suppress {

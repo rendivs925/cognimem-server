@@ -1,4 +1,4 @@
-use super::types::{CaptureEvent, CaptureEventType, MemoryScope, MemoryTier, CognitiveMemoryUnit};
+use super::types::{CaptureEvent, CaptureEventType, CognitiveMemoryUnit, MemoryScope, MemoryTier};
 use uuid::Uuid;
 
 pub struct CaptureIngest {
@@ -44,19 +44,22 @@ impl CaptureIngest {
 
         let content = match event.event_type {
             CaptureEventType::SessionStarted => {
-                format!("Session started for project: {}", event.project_path.as_deref().unwrap_or("unknown"))
+                format!(
+                    "Session started for project: {}",
+                    event.project_path.as_deref().unwrap_or("unknown")
+                )
             }
-            CaptureEventType::SessionEnded => {
-                "Session ended".to_string()
-            }
-            CaptureEventType::TurnStarted => {
-                "Turn started".to_string()
-            }
-            CaptureEventType::TurnEnded => {
-                event.content.clone().unwrap_or_else(|| "Turn completed".to_string())
-            }
+            CaptureEventType::SessionEnded => "Session ended".to_string(),
+            CaptureEventType::TurnStarted => "Turn started".to_string(),
+            CaptureEventType::TurnEnded => event
+                .content
+                .clone()
+                .unwrap_or_else(|| "Turn completed".to_string()),
             CaptureEventType::ToolStarted => {
-                format!("Started tool: {}", event.tool_name.as_deref().unwrap_or("unknown"))
+                format!(
+                    "Started tool: {}",
+                    event.tool_name.as_deref().unwrap_or("unknown")
+                )
             }
             CaptureEventType::ToolEnded => {
                 let status = if event.success.unwrap_or(false) {
@@ -64,21 +67,31 @@ impl CaptureIngest {
                 } else {
                     "failed"
                 };
-                format!("Tool {} {}", event.tool_name.as_deref().unwrap_or("unknown"), status)
+                format!(
+                    "Tool {} {}",
+                    event.tool_name.as_deref().unwrap_or("unknown"),
+                    status
+                )
             }
             CaptureEventType::TaskCreated => {
-                format!("Task created: {}", event.task_name.as_deref().unwrap_or("unknown"))
+                format!(
+                    "Task created: {}",
+                    event.task_name.as_deref().unwrap_or("unknown")
+                )
             }
             CaptureEventType::TaskCompleted => {
-                format!("Task completed: {}", event.task_name.as_deref().unwrap_or("unknown"))
+                format!(
+                    "Task completed: {}",
+                    event.task_name.as_deref().unwrap_or("unknown")
+                )
             }
-            CaptureEventType::SessionIdle => {
-                "Session became idle".to_string()
-            }
+            CaptureEventType::SessionIdle => "Session became idle".to_string(),
         };
 
         let scope = if let Some(ref path) = project_path {
-            MemoryScope::Project { project_path: path.clone() }
+            MemoryScope::Project {
+                project_path: path.clone(),
+            }
         } else {
             MemoryScope::Global
         };

@@ -4,17 +4,19 @@
 
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, cosine_similarity, fuse_scores};
 use cognimem_server::memory::CompletePatternArgs;
+use cognimem_server::memory::slm_types::{
+    BestPractice, ExtractBestPracticeInput, SlmMetadata, SummarizeTurnInput, SummarizeTurnOutput,
+    TaskSummary,
+};
 use cognimem_server::memory::types::{
-    AssignRoleArgs, AssociateArgs, CaptureEvent, ConflictResolution,
-    ExecuteSkillArgs, ForgetArgs, GetObservationsArgs, MemoryScope, MemoryTier, PersonaDomain,
-    RecallArgs, RememberArgs, SearchArgs, SessionBuffer, TimelineArgs,
+    AssignRoleArgs, AssociateArgs, CaptureEvent, ConflictResolution, ExecuteSkillArgs, ForgetArgs,
+    GetObservationsArgs, ListMemoriesArgs, MemoryScope, MemoryTier, PersonaDomain, RecallArgs,
+    RememberArgs, SearchArgs, SessionBuffer, TimelineArgs,
 };
 use cognimem_server::memory::{
-    CognitiveMemoryUnit, InMemoryStore, MemoryGraph, MemoryStore,
-    NoOpSlm, ProjectModel, ProjectModelManager,
-    detect_and_create_skill, detect_convention_patterns, extract_persona,
+    CognitiveMemoryUnit, InMemoryStore, MemoryGraph, MemoryStore, NoOpSlm, ProjectModel,
+    ProjectModelManager, detect_and_create_skill, detect_convention_patterns, extract_persona,
 };
-use cognimem_server::memory::slm_types::{BestPractice, ExtractBestPracticeInput, SummarizeTurnInput, SummarizeTurnOutput, TaskSummary, SlmMetadata};
 use cognimem_server::search::{Fts5Search, SearchEngine};
 use uuid::Uuid;
 
@@ -88,6 +90,23 @@ fn test_search_args_parsing() {
     assert_eq!(args.query, "test query");
     assert_eq!(args.tier, Some(MemoryTier::Working));
     assert_eq!(args.limit, Some(5));
+}
+
+#[test]
+fn test_list_memories_args_parsing() {
+    let json = serde_json::json!({
+        "tier": "semantic",
+        "project_path": "/home/user/project",
+        "scope_filter": "project",
+        "min_activation": 0.2,
+        "limit": 25
+    });
+    let args: ListMemoriesArgs = serde_json::from_value(json).unwrap();
+    assert_eq!(args.tier, Some(MemoryTier::Semantic));
+    assert_eq!(args.project_path.as_deref(), Some("/home/user/project"));
+    assert_eq!(args.scope_filter.as_deref(), Some("project"));
+    assert_eq!(args.min_activation, Some(0.2));
+    assert_eq!(args.limit, Some(25));
 }
 
 #[test]
@@ -398,7 +417,9 @@ fn test_memory_scope_global() {
 fn test_memory_scope_project() {
     use cognimem_server::memory::types::MemoryScope;
 
-    let scope = MemoryScope::Project { project_path: "/home/user/myproject".to_string() };
+    let scope = MemoryScope::Project {
+        project_path: "/home/user/myproject".to_string(),
+    };
     assert!(!scope.is_global());
     assert_eq!(scope.project_path(), Some("/home/user/myproject"));
 }
@@ -408,8 +429,18 @@ fn test_memory_scope_from_str() {
     use cognimem_server::memory::types::MemoryScope;
 
     assert_eq!(MemoryScope::from_str("global"), Some(MemoryScope::Global));
-    assert_eq!(MemoryScope::from_str("/home/user/project"), Some(MemoryScope::Project { project_path: "/home/user/project".to_string() }));
-    assert_eq!(MemoryScope::from_str("~/projects/myapp"), Some(MemoryScope::Project { project_path: "~/projects/myapp".to_string() }));
+    assert_eq!(
+        MemoryScope::from_str("/home/user/project"),
+        Some(MemoryScope::Project {
+            project_path: "/home/user/project".to_string()
+        })
+    );
+    assert_eq!(
+        MemoryScope::from_str("~/projects/myapp"),
+        Some(MemoryScope::Project {
+            project_path: "~/projects/myapp".to_string()
+        })
+    );
     assert_eq!(MemoryScope::from_str("invalid"), None);
 }
 
@@ -417,17 +448,20 @@ fn test_memory_scope_from_str() {
 fn test_cognitive_memory_unit_with_scope() {
     use cognimem_server::memory::types::MemoryScope;
 
-    let mut mem = CognitiveMemoryUnit::new("test content".to_string(), MemoryTier::Episodic, 0.5, 0.5);
+    let mut mem =
+        CognitiveMemoryUnit::new("test content".to_string(), MemoryTier::Episodic, 0.5, 0.5);
     assert_eq!(mem.scope, MemoryScope::Global);
 
-    mem.scope = MemoryScope::Project { project_path: "/home/user/project".to_string() };
+    mem.scope = MemoryScope::Project {
+        project_path: "/home/user/project".to_string(),
+    };
     assert!(!mem.scope.is_global());
 }
 
 #[test]
 fn test_memory_metadata_with_salience() {
-    use cognimem_server::memory::types::MemoryMetadata;
     use chrono::Utc;
+    use cognimem_server::memory::types::MemoryMetadata;
 
     let mut metadata = MemoryMetadata::new(0.5, 0.5);
     assert_eq!(metadata.salience, 1.0);
@@ -447,10 +481,22 @@ fn test_dual_timescale_manager() {
     let _manager = DualTimescaleManager::new();
 
     // Test timescale kind from tier
-    assert_eq!(TimescaleKind::from_tier(MemoryTier::Sensory), TimescaleKind::Fast);
-    assert_eq!(TimescaleKind::from_tier(MemoryTier::Working), TimescaleKind::Fast);
-    assert_eq!(TimescaleKind::from_tier(MemoryTier::Episodic), TimescaleKind::Slow);
-    assert_eq!(TimescaleKind::from_tier(MemoryTier::Semantic), TimescaleKind::Slow);
+    assert_eq!(
+        TimescaleKind::from_tier(MemoryTier::Sensory),
+        TimescaleKind::Fast
+    );
+    assert_eq!(
+        TimescaleKind::from_tier(MemoryTier::Working),
+        TimescaleKind::Fast
+    );
+    assert_eq!(
+        TimescaleKind::from_tier(MemoryTier::Episodic),
+        TimescaleKind::Slow
+    );
+    assert_eq!(
+        TimescaleKind::from_tier(MemoryTier::Semantic),
+        TimescaleKind::Slow
+    );
 
     // Test custom weights - use with_weights which creates a new manager
     let _custom = DualTimescaleManager::with_weights(0.4, 0.6);
@@ -493,7 +539,10 @@ fn test_work_claim_release_and_complete() {
 fn test_session_context() {
     use cognimem_server::memory::types::SessionContext;
 
-    let mut ctx = SessionContext::new(Some("/home/user/project".to_string()), Some("assistant".to_string()));
+    let mut ctx = SessionContext::new(
+        Some("/home/user/project".to_string()),
+        Some("assistant".to_string()),
+    );
 
     assert!(ctx.session_id != Uuid::nil());
     assert_eq!(ctx.project_path, Some("/home/user/project".to_string()));
@@ -580,24 +629,27 @@ fn test_capture_ingest_suppression() {
 
 #[test]
 fn test_summarize_turn_input_output() {
-    use cognimem_server::memory::slm_types::{SummarizeTurnInput, SummarizeTurnOutput, TurnSummary};
+    use cognimem_server::memory::slm_types::{
+        SummarizeTurnInput, SummarizeTurnOutput, TurnSummary,
+    };
 
     let input = SummarizeTurnInput {
-        turns: vec![
-            TurnSummary {
-                turn_id: Uuid::new_v4(),
-                content: "Fixed the bug in auth".to_string(),
-                tool_usage: vec!["git".to_string()],
-                decisions: vec!["Use JWT".to_string()],
-            }
-        ],
+        turns: vec![TurnSummary {
+            turn_id: Uuid::new_v4(),
+            content: "Fixed the bug in auth".to_string(),
+            tool_usage: vec!["git".to_string()],
+            decisions: vec!["Use JWT".to_string()],
+        }],
     };
 
     let output = SummarizeTurnOutput {
         summary: "Fixed the bug".to_string(),
         key_decisions: vec!["Use JWT".to_string()],
         key_actions: vec!["Fixed auth".to_string()],
-        metadata: SlmMetadata { model: "noop".to_string(), confidence: 0.3 },
+        metadata: SlmMetadata {
+            model: "noop".to_string(),
+            confidence: 0.3,
+        },
     };
 
     assert_eq!(input.turns.len(), 1);
@@ -610,20 +662,16 @@ fn test_summarize_session_input_output() {
 
     let input = SummarizeSessionInput {
         turns: vec![],
-        completed_tasks: vec![
-            TaskSummary {
-                task_id: Some(Uuid::new_v4()),
-                title: "Add login".to_string(),
-                status: "completed".to_string(),
-            }
-        ],
-        open_tasks: vec![
-            TaskSummary {
-                task_id: Some(Uuid::new_v4()),
-                title: "Add tests".to_string(),
-                status: "open".to_string(),
-            }
-        ],
+        completed_tasks: vec![TaskSummary {
+            task_id: Some(Uuid::new_v4()),
+            title: "Add login".to_string(),
+            status: "completed".to_string(),
+        }],
+        open_tasks: vec![TaskSummary {
+            task_id: Some(Uuid::new_v4()),
+            title: "Add tests".to_string(),
+            status: "open".to_string(),
+        }],
     };
 
     assert_eq!(input.completed_tasks.len(), 1);
@@ -749,7 +797,9 @@ fn test_memory_graph_with_scopes() {
         0.7,
         0.5,
     );
-    project_mem.scope = MemoryScope::Project { project_path: "/home/user/rust-project".to_string() };
+    project_mem.scope = MemoryScope::Project {
+        project_path: "/home/user/rust-project".to_string(),
+    };
     let project_id = graph.add_memory(project_mem);
 
     assert_eq!(graph.len(), 2);
@@ -760,7 +810,10 @@ fn test_memory_graph_with_scopes() {
 
     let retrieved_project = graph.get_memory(&project_id).unwrap();
     assert!(!retrieved_project.scope.is_global());
-    assert_eq!(retrieved_project.scope.project_path(), Some("/home/user/rust-project"));
+    assert_eq!(
+        retrieved_project.scope.project_path(),
+        Some("/home/user/rust-project")
+    );
 }
 
 // ============================================================================
@@ -799,8 +852,6 @@ fn test_full_remember_with_scope_and_persona() {
 
 #[test]
 fn test_sensory_tier_capacity() {
-    
-
     let tier = MemoryTier::Sensory;
     let capacity = tier.capacity();
     assert_eq!(capacity, Some(50));
@@ -838,8 +889,8 @@ fn test_decay_rates() {
 
 #[test]
 fn test_activation_floor() {
-    use cognimem_server::memory::types::MemoryMetadata;
     use chrono::Utc;
+    use cognimem_server::memory::types::MemoryMetadata;
 
     let mut metadata = MemoryMetadata::new(0.5, 0.5);
     // Force very old timestamps
@@ -900,21 +951,27 @@ fn test_special_characters_in_content() {
 
 #[test]
 fn test_project_path_with_spaces() {
-    let scope = MemoryScope::Project { project_path: "/home/user/my project".to_string() };
+    let scope = MemoryScope::Project {
+        project_path: "/home/user/my project".to_string(),
+    };
     assert!(!scope.is_global());
     assert_eq!(scope.project_path(), Some("/home/user/my project"));
 }
 
 #[test]
 fn test_project_path_with_special_chars() {
-    let scope = MemoryScope::Project { project_path: "/home/user/project-v2.0_test".to_string() };
+    let scope = MemoryScope::Project {
+        project_path: "/home/user/project-v2.0_test".to_string(),
+    };
     assert!(!scope.is_global());
     assert!(scope.project_path().unwrap().contains('-'));
 }
 
 #[test]
 fn test_nested_project_path() {
-    let scope = MemoryScope::Project { project_path: "/home/user/repos/org/repo".to_string() };
+    let scope = MemoryScope::Project {
+        project_path: "/home/user/repos/org/repo".to_string(),
+    };
     assert!(!scope.is_global());
     assert!(scope.project_path().unwrap().contains("repos"));
 }
@@ -937,7 +994,12 @@ fn test_claim_with_long_lease() {
     use cognimem_server::memory::types::{ClaimType, WorkClaim};
 
     // Max lease 72 hours
-    let claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Implementation, 72);
+    let claim = WorkClaim::new(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        ClaimType::Implementation,
+        72,
+    );
     let expected = claim.created_at + (72 * 3600);
     assert_eq!(claim.leased_until, expected);
 }
@@ -999,8 +1061,6 @@ fn test_session_buffer_should_flush_on_idle() {
 
 #[test]
 fn test_session_buffer_not_flush_immediately() {
-    
-
     let mut buffer = SessionBuffer::new();
     buffer.add_event(CaptureEvent::session_started("/test".to_string()));
     assert!(!buffer.should_flush());
@@ -1019,7 +1079,11 @@ fn test_capture_ingest_no_suppress_normal_tools() {
     let tools = ["git", "npm", "cargo", "docker", "pytest", "eslint"];
     for tool in tools {
         let evt = CaptureEvent::tool_executed(tool.to_string(), true);
-        assert!(!ingest.should_suppress(&evt), "Tool {} should not be suppressed", tool);
+        assert!(
+            !ingest.should_suppress(&evt),
+            "Tool {} should not be suppressed",
+            tool
+        );
     }
 }
 
@@ -1074,12 +1138,7 @@ fn test_event_to_memory_suppressed() {
 fn test_memory_summary_from() {
     use cognimem_server::memory::types::MemorySummary;
 
-    let mem = CognitiveMemoryUnit::new(
-        "Test content".to_string(),
-        MemoryTier::Episodic,
-        0.8,
-        0.5,
-    );
+    let mem = CognitiveMemoryUnit::new("Test content".to_string(), MemoryTier::Episodic, 0.8, 0.5);
 
     let summary = MemorySummary::from(&mem);
     assert_eq!(summary.content, "Test content");
@@ -1136,7 +1195,10 @@ fn test_summarize_empty_turns() {
         summary: "".to_string(),
         key_decisions: vec![],
         key_actions: vec![],
-        metadata: SlmMetadata { model: "test".to_string(), confidence: 0.0 },
+        metadata: SlmMetadata {
+            model: "test".to_string(),
+            confidence: 0.0,
+        },
     };
     assert_eq!(input.turns.len(), 0);
     assert_eq!(output.key_decisions.len(), 0);
@@ -1220,7 +1282,10 @@ fn test_embedding_deterministic() {
 #[test]
 fn test_embedding_similar_texts() {
     let embedder = HashEmbedding::new();
-    let sim = cosine_similarity(&embedder.embed("rust programming"), &embedder.embed("programming in rust"));
+    let sim = cosine_similarity(
+        &embedder.embed("rust programming"),
+        &embedder.embed("programming in rust"),
+    );
     // Similar texts should have some similarity
     assert!(sim > 0.0);
 }
@@ -1258,12 +1323,7 @@ fn test_many_memories_in_graph() {
     let mut graph = MemoryGraph::new();
 
     for i in 0..1000 {
-        let mem = CognitiveMemoryUnit::new(
-            format!("Memory {}", i),
-            MemoryTier::Episodic,
-            0.5,
-            0.5,
-        );
+        let mem = CognitiveMemoryUnit::new(format!("Memory {}", i), MemoryTier::Episodic, 0.5, 0.5);
         graph.add_memory(mem);
     }
 
@@ -1278,7 +1338,8 @@ fn test_many_associations() {
     let id1 = graph.add_memory(mem1);
 
     for i in 0..50 {
-        let mem = CognitiveMemoryUnit::new(format!("Associated {}", i), MemoryTier::Episodic, 0.5, 0.5);
+        let mem =
+            CognitiveMemoryUnit::new(format!("Associated {}", i), MemoryTier::Episodic, 0.5, 0.5);
         let id = graph.add_memory(mem);
         graph.add_association(&id1, &id, 0.5);
     }
@@ -1339,13 +1400,19 @@ fn test_full_work_claim_flow() {
     let memory_id = Uuid::new_v4();
     let session_id = Uuid::new_v4();
     let mut claim = WorkClaim::new(memory_id, session_id, ClaimType::Research, 1);
-    
+
     assert!(!claim.memory_id.is_nil());
     assert!(!claim.is_expired());
-    assert_eq!(claim.status, cognimem_server::memory::types::ClaimStatus::Active);
+    assert_eq!(
+        claim.status,
+        cognimem_server::memory::types::ClaimStatus::Active
+    );
 
     claim.release();
-    assert_eq!(claim.status, cognimem_server::memory::types::ClaimStatus::Released);
+    assert_eq!(
+        claim.status,
+        cognimem_server::memory::types::ClaimStatus::Released
+    );
 }
 
 #[test]
@@ -1532,7 +1599,10 @@ mod capture_tests {
         let memories = guard.graph.get_all_memories();
         assert!(!memories.is_empty());
         // NoOpSlm defaults to Episodic tier; when real SLM is available it will classify properly
-        assert_eq!(memories[0].tier, cognimem_server::memory::types::MemoryTier::Episodic);
+        assert_eq!(
+            memories[0].tier,
+            cognimem_server::memory::types::MemoryTier::Episodic
+        );
     }
 
     #[tokio::test]
@@ -1543,9 +1613,9 @@ mod capture_tests {
 
         let state = make_test_state();
         let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state)));
-        let app = cognimem_server::capture::create_router(
-            cognimem_server::capture::AppState { pipeline },
-        );
+        let app = cognimem_server::capture::create_router(cognimem_server::capture::AppState {
+            pipeline,
+        });
 
         let response = app
             .oneshot(
@@ -1568,9 +1638,9 @@ mod capture_tests {
 
         let state = make_test_state();
         let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
-        let app = cognimem_server::capture::create_router(
-            cognimem_server::capture::AppState { pipeline },
-        );
+        let app = cognimem_server::capture::create_router(cognimem_server::capture::AppState {
+            pipeline,
+        });
 
         let event = make_event(CanonicalEventType::FileEdited);
         let body = serde_json::to_vec(&event).unwrap();
@@ -1601,9 +1671,9 @@ mod capture_tests {
 
         let state = make_test_state();
         let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
-        let app = cognimem_server::capture::create_router(
-            cognimem_server::capture::AppState { pipeline },
-        );
+        let app = cognimem_server::capture::create_router(cognimem_server::capture::AppState {
+            pipeline,
+        });
 
         let events = vec![
             make_event(CanonicalEventType::SessionCreated),
@@ -1637,9 +1707,9 @@ mod capture_tests {
 
         let state = make_test_state();
         let pipeline = Arc::new(Mutex::new(CapturePipeline::new(state)));
-        let app = cognimem_server::capture::create_router(
-            cognimem_server::capture::AppState { pipeline },
-        );
+        let app = cognimem_server::capture::create_router(cognimem_server::capture::AppState {
+            pipeline,
+        });
 
         let response = app
             .oneshot(

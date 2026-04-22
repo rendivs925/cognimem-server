@@ -4,6 +4,15 @@ use crate::memory::{MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelMa
 use crate::search::{Fts5Search, SearchEngine, SubstringSearch};
 use std::collections::HashMap;
 
+fn indexed_content(memory: &crate::memory::CognitiveMemoryUnit) -> String {
+    match memory.model.compressed_content.as_deref() {
+        Some(compressed) if !compressed.is_empty() => {
+            format!("{} {}", memory.content, compressed)
+        }
+        _ => memory.content.clone(),
+    }
+}
+
 pub struct CogniMemState {
     pub graph: MemoryGraph,
     pub storage: Box<dyn MemoryStore>,
@@ -55,7 +64,10 @@ impl CogniMemState {
             let emb = embedder.embed(&m.content);
             graph.add_memory(m.clone());
             graph.set_embedding(m.id, emb);
-            search.index(m.id, &m.content, m.tier);
+        }
+        graph.rebuild_associations();
+        for m in &memories {
+            search.index(m.id, &indexed_content(m), m.tier);
         }
         Self {
             graph,
