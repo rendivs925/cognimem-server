@@ -84,6 +84,68 @@ impl OllamaSlm {
         }
     }
 
+    const MAX_RETRIES: usize = 3;
+    const RETRY_BACKOFF_MS: u64 = 500;
+
+    async fn generate_with_retry(&self, prompt: &str, max_tokens: usize) -> Result<String, SlmError> {
+        let mut attempt = 0;
+        let mut last_error = None;
+
+        while attempt < 3 {
+            attempt += 1;
+            
+            match self.generate(prompt, max_tokens).await {
+                Ok(response) => {
+                    let cleaned = Self::extract_json(&response);
+                    if Self::validate_json(&cleaned) {
+                        return Ok(cleaned);
+                    }
+                    
+                    if attempt < 3 {
+                        tracing::warn!("Invalid JSON attempt {}, trying repair prompt", attempt);
+                        let repair_prompt = Self::repair_prompt(&cleaned, prompt);
+                        match self.generate(&repair_prompt, max_tokens).await {
+                            Ok(repair_response) => {
+                                let repaired = Self::extract_json(&repair_response);
+                                if Self::validate_json(&repaired) {
+                                    return Ok(repaired);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Repair prompt failed: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e.clone());
+                    if attempt < 3 {
+                        tracing::warn!(" Ollama request attempt {} failed: {}", attempt, e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempt as u64)).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| 
+            SlmError::InvalidResponse(format!("Failed after {} attempts", 3))))
+    }
+
+    fn repair_prompt(invalid_json: &str, original_prompt: &str) -> String {
+        format!(
+            "Fix the following invalid JSON so it matches the required schema.\n\
+            Return ONLY the corrected JSON, no explanation.\n\n\
+            Invalid JSON:\n{}\n\n\
+            Original instruction:\n{}\n\n\
+            Corrected JSON:",
+            invalid_json, original_prompt
+        )
+    }
+
+    fn validate_json(json_str: &str) -> bool {
+        serde_json::from_str::<serde_json::Value>(json_str).is_ok()
+    }
+
     async fn generate(&self, prompt: &str, max_tokens: usize) -> Result<String, SlmError> {
         let request = OllamaRequest {
             model: self.model.clone(),
@@ -228,17 +290,20 @@ impl SlmEngine for OllamaSlm {
         input: CompressMemoryInput,
     ) -> Result<CompressMemoryOutput, SlmError> {
         let prompt = compress_memory_prompt(&input);
-        let mut output: CompressMemoryOutput =
-            self.parse_json(self.generate(&prompt, 80).await).await?;
-        output.summary = output.summary.trim().to_string();
+        let output: CompressMemoryOutput =
+            self.parse_json(self.generate_with_retry(&prompt, 80).await).await?;
         if output.summary.is_empty() {
             return Err(SlmError::ValidationFailed(
                 "compression summary was empty".to_string(),
             ));
         }
-        output.metadata.model = self.model.clone();
-        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
-        Ok(output)
+        Ok(CompressMemoryOutput {
+            summary: output.summary.trim().to_string(),
+            metadata: SlmMetadata {
+                model: self.model.clone(),
+                confidence: output.metadata.confidence.clamp(0.0, 1.0),
+            },
+        })
     }
 
     async fn classify_memory(
@@ -247,7 +312,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<ClassifyMemoryOutput, SlmError> {
         let prompt = classify_memory_prompt(&input);
         let mut output: ClassifyMemoryOutput =
-            self.parse_json(self.generate(&prompt, 160).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 160).await).await?;
 
         output.importance = output.importance.clamp(0.0, 1.0);
         output.tags = output
@@ -311,7 +376,7 @@ impl SlmEngine for OllamaSlm {
 
         let prompt = rerank_candidates_prompt(&input);
         let mut output: RerankCandidatesOutput =
-            self.parse_json(self.generate(&prompt, 160).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 160).await).await?;
         output.ranked_ids.truncate(input.top_n);
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
@@ -324,7 +389,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<ResolveConflictOutput, SlmError> {
         let prompt = resolve_conflict_prompt(&input);
         let mut output: ResolveConflictOutput =
-            self.parse_json(self.generate(&prompt, 120).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 120).await).await?;
         output.merged_summary = output.merged_summary.map(|s| s.trim().to_string());
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
@@ -347,7 +412,7 @@ impl SlmEngine for OllamaSlm {
 
         let prompt = extract_persona_prompt(&input);
         let mut output: ExtractPersonaOutput =
-            self.parse_json(self.generate(&prompt, 500).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 500).await).await?;
         for profile in &mut output.profiles {
             profile.summary = profile.summary.trim().to_string();
             profile.confidence = profile.confidence.clamp(0.0, 1.0);
@@ -367,7 +432,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<DistillSkillOutput, SlmError> {
         let prompt = distill_skill_prompt(&input);
         let mut output: DistillSkillOutput =
-            self.parse_json(self.generate(&prompt, 220).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 220).await).await?;
         output.name = output.name.trim().to_string();
         output.pattern = output.pattern.trim().to_string();
         output.steps.retain(|step| !step.trim().is_empty());
@@ -387,7 +452,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<CompletePatternOutput, SlmError> {
         let prompt = complete_pattern_prompt(&input);
         let mut output: CompletePatternOutput =
-            self.parse_json(self.generate(&prompt, 180).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 180).await).await?;
         output.completed_text = output.completed_text.trim().to_string();
         output.evidence.retain(|item| !item.trim().is_empty());
         if output.completed_text.is_empty() {
@@ -406,7 +471,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<SummarizeTurnOutput, SlmError> {
         let prompt = summarize_turn_prompt(&input);
         let mut output: SummarizeTurnOutput =
-            self.parse_json(self.generate(&prompt, 180).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 180).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
@@ -418,7 +483,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<SummarizeSessionOutput, SlmError> {
         let prompt = summarize_session_prompt(&input);
         let mut output: SummarizeSessionOutput =
-            self.parse_json(self.generate(&prompt, 240).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 240).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
@@ -430,7 +495,7 @@ impl SlmEngine for OllamaSlm {
     ) -> Result<ExtractBestPracticeOutput, SlmError> {
         let prompt = extract_best_practice_prompt(&input);
         let mut output: ExtractBestPracticeOutput =
-            self.parse_json(self.generate(&prompt, 180).await).await?;
+            self.parse_json(self.generate_with_retry(&prompt, 180).await).await?;
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
