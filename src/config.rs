@@ -63,4 +63,17 @@ pub struct Cli {
 
     #[arg(long, default_value_t = 37778, help = "Port for capture HTTP endpoint")]
     pub capture_port: u16,
+
+    #[arg(
+        long,
+        default_value = "redis://localhost:6379",
+        help = "Redis connection URL for message broker"
+    )]
+    pub redis_url: Option<String>,
+
+    #[arg(
+        long,
+        help = "Unique agent ID for this client (used in broker events)"
+    )]
+    pub agent_id: Option<String>,
 }

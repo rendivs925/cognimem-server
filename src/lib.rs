@@ -5,3 +5,4 @@ pub mod metrics;
 pub mod rate_limit;
 pub mod search;
 pub mod state;
+pub mod broker;

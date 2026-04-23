@@ -204,3 +204,50 @@ pub struct ExtractBestPracticeOutput {
     pub should_persist: bool,
     pub metadata: SlmMetadata,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegateInput {
+    pub query: String,
+    pub context: Vec<String>,
+    pub confidence_threshold: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegateOutput {
+    pub response: String,
+    pub delegated: bool,
+    pub confidence: f32,
+    pub model_used: String,
+    pub reasoning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeachFromDemonstrationInput {
+    pub demonstration: String,
+    pub pattern_extracted: String,
+    pub domain: Option<String>,
+    pub source_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeachFromDemonstrationOutput {
+    pub episodic_memory_id: Uuid,
+    pub skill_pending: bool,
+    pub promotion_candidates: Vec<Uuid>,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulatePerspectiveInput {
+    pub perspective_role: String,
+    pub situation: String,
+    pub question: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulatePerspectiveOutput {
+    pub reasoning: String,
+    pub recommendation: String,
+    pub confidence: f32,
+    pub alternative_perspectives: Vec<String>,
+}

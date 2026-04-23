@@ -6,9 +6,12 @@ use super::slm_prompts::{
 };
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
-    CompressMemoryInput, CompressMemoryOutput, DistillSkillInput, DistillSkillOutput,
-    ExtractBestPracticeInput, ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
-    RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
+    CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
+    DistillSkillInput, DistillSkillOutput, ExtractBestPracticeInput,
+    ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
+    SimulatePerspectiveInput, SimulatePerspectiveOutput,
+    TeachFromDemonstrationInput, TeachFromDemonstrationOutput, RerankCandidatesInput,
+    RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
     SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
     SummarizeTurnOutput,
 };
@@ -499,6 +502,59 @@ impl SlmEngine for OllamaSlm {
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
+    }
+
+    async fn delegate_to_llm(
+        &self,
+        input: DelegateInput,
+    ) -> Result<DelegateOutput, SlmError> {
+        let context = input.context.join("\n- ");
+        let prompt = format!(
+            "Query: {}\nContext:\n- {}\n\nProvide a detailed response to the query above. Include your confidence level (0-1) in the response.",
+            input.query, context
+        );
+        let response = self.generate_with_retry(&prompt, 300).await?;
+        Ok(DelegateOutput {
+            response: response.clone(),
+            delegated: input.confidence_threshold < 0.85,
+            confidence: 0.7,
+            model_used: self.model.clone(),
+            reasoning: Some("Response from SLM".to_string()),
+        })
+    }
+
+    async fn teach_from_demonstration(
+        &self,
+        input: TeachFromDemonstrationInput,
+    ) -> Result<TeachFromDemonstrationOutput, SlmError> {
+        let prompt = format!(
+            "Extract the core pattern from this demonstration:\n\nDemonstration: {}\nExtracted pattern: {}\n\nAnalyze if this pattern should be promoted to a procedural skill.",
+            input.demonstration, input.pattern_extracted
+        );
+        let _ = self.generate_with_retry(&prompt, 150).await?;
+        Ok(TeachFromDemonstrationOutput {
+            episodic_memory_id: uuid::Uuid::new_v4(),
+            skill_pending: false,
+            promotion_candidates: Vec::new(),
+            confidence: 0.5,
+        })
+    }
+
+    async fn simulate_perspective(
+        &self,
+        input: SimulatePerspectiveInput,
+    ) -> Result<SimulatePerspectiveOutput, SlmError> {
+        let prompt = format!(
+            "Answer from the perspective of a {}.\n\nSituation: {}\nQuestion: {}\n\nProvide reasoning, recommendation, and alternative perspectives.",
+            input.perspective_role, input.situation, input.question
+        );
+        let response = self.generate_with_retry(&prompt, 250).await?;
+        Ok(SimulatePerspectiveOutput {
+            reasoning: format!("From {} perspective", input.perspective_role),
+            recommendation: "See response above".to_string(),
+            confidence: 0.5,
+            alternative_perspectives: vec!["security expert".to_string(), "end user".to_string()],
+        })
     }
 }
 

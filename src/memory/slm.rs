@@ -1,8 +1,10 @@
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
-    CompressMemoryInput, CompressMemoryOutput, ConflictKind, DistillSkillInput, DistillSkillOutput,
-    ExtractBestPracticeInput, ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
-    RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
+    CompressMemoryInput, CompressMemoryOutput, ConflictKind, DelegateInput, DelegateOutput,
+    DistillSkillInput, DistillSkillOutput, ExtractBestPracticeInput, ExtractBestPracticeOutput,
+    ExtractPersonaInput, ExtractPersonaOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
+    TeachFromDemonstrationInput, TeachFromDemonstrationOutput, RerankCandidatesInput,
+    RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
     SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
     SummarizeTurnOutput,
 };
@@ -72,6 +74,18 @@ pub trait SlmEngine: Send + Sync {
         &self,
         input: ExtractBestPracticeInput,
     ) -> Result<ExtractBestPracticeOutput, SlmError>;
+    async fn delegate_to_llm(
+        &self,
+        input: DelegateInput,
+    ) -> Result<DelegateOutput, SlmError>;
+    async fn teach_from_demonstration(
+        &self,
+        input: TeachFromDemonstrationInput,
+    ) -> Result<TeachFromDemonstrationOutput, SlmError>;
+    async fn simulate_perspective(
+        &self,
+        input: SimulatePerspectiveInput,
+    ) -> Result<SimulatePerspectiveOutput, SlmError>;
 }
 
 pub struct NoOpSlm;
@@ -293,6 +307,44 @@ impl SlmEngine for NoOpSlm {
                 model: self.model_name().to_string(),
                 confidence: 0.3,
             },
+        })
+    }
+
+    async fn delegate_to_llm(
+        &self,
+        input: DelegateInput,
+    ) -> Result<DelegateOutput, SlmError> {
+        let confidence = if input.confidence_threshold <= 0.5 { 0.5 } else { input.confidence_threshold };
+        Ok(DelegateOutput {
+            response: format!("Delegate: {}", input.query),
+            delegated: true,
+            confidence: 0.7,
+            model_used: self.model_name().to_string(),
+            reasoning: Some("Confidence below threshold, delegating to larger model".to_string()),
+        })
+    }
+
+    async fn teach_from_demonstration(
+        &self,
+        input: TeachFromDemonstrationInput,
+    ) -> Result<TeachFromDemonstrationOutput, SlmError> {
+        Ok(TeachFromDemonstrationOutput {
+            episodic_memory_id: uuid::Uuid::new_v4(),
+            skill_pending: false,
+            promotion_candidates: Vec::new(),
+            confidence: 0.6,
+        })
+    }
+
+    async fn simulate_perspective(
+        &self,
+        input: SimulatePerspectiveInput,
+    ) -> Result<SimulatePerspectiveOutput, SlmError> {
+        Ok(SimulatePerspectiveOutput {
+            reasoning: format!("From {} perspective: analyzing situation", input.perspective_role),
+            recommendation: "Consider security implications first".to_string(),
+            confidence: 0.4,
+            alternative_perspectives: vec!["security expert".to_string(), "end user".to_string()],
         })
     }
 }

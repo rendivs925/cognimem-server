@@ -20,7 +20,11 @@ use cognimem_server::memory::{
 };
 use cognimem_server::memory::{
     complete_pattern, detect_and_create_skill, execute_skill as run_skill, extract_persona,
-    find_skill, strengthen_co_activated,
+    find_skill, rank_by_timescale, strengthen_co_activated, apply_stdp,
+};
+use cognimem_server::memory::slm_types::{
+    DelegateInput, DelegateOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
+    TeachFromDemonstrationInput, TeachFromDemonstrationOutput,
 };
 use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
@@ -544,6 +548,52 @@ impl ServerHandler for CogniMemServer {
                     "required": ["project_path"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("delegate_to_llm"),
+                Cow::Borrowed(
+                    "Delegate a query to a larger model when confidence is below threshold",
+                ),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "context": { "type": "array", "items": { "type": "string" } },
+                        "confidence_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                    },
+                    "required": ["query"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("teach_from_demonstration"),
+                Cow::Borrowed(
+                    "Learn a pattern from external demonstration (two-stage: episodic now, procedural after repeat)",
+                ),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "demonstration": { "type": "string" },
+                        "pattern_extracted": { "type": "string" },
+                        "domain": { "type": "string" },
+                        "source_type": { "type": "string" }
+                    },
+                    "required": ["demonstration"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("simulate_perspective"),
+                Cow::Borrowed(
+                    "Answer from a specific perspective (security expert, end user, etc.)",
+                ),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "perspective_role": { "type": "string" },
+                        "situation": { "type": "string" },
+                        "question": { "type": "string" }
+                    },
+                    "required": ["perspective_role", "situation", "question"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -589,6 +639,9 @@ impl ServerHandler for CogniMemServer {
             "summarize_session" => self.handle_summarize_session(args).await,
             "extract_best_practice" => self.handle_extract_best_practice(args).await,
             "get_project_conventions" => self.handle_get_project_conventions(args).await,
+            "delegate_to_llm" => self.handle_delegate_to_llm(args).await,
+            "teach_from_demonstration" => self.handle_teach_from_demonstration(args).await,
+            "simulate_perspective" => self.handle_simulate_perspective(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -916,22 +969,57 @@ impl CogniMemServer {
             fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6)
         };
 
-        let mut results: Vec<&CognitiveMemoryUnit> = fused
+        let fused_scores: Vec<(uuid::Uuid, f32)> = fused.iter().map(|(id, score)| (*id, *score)).collect();
+
+        let results_before_association: Vec<uuid::Uuid> = fused
             .iter()
-            .filter_map(|(id, _)| guard.graph.get_memory(id))
+            .filter_map(|(id, _)| {
+                guard.graph.get_memory(id).map(|m| {
+                    if m.metadata.base_activation >= min_activation && scope_matches(m) {
+                        Some(m.id)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .flatten()
+            .collect();
+
+        let timescaled_scores = rank_by_timescale(&mut guard.graph, fused_scores);
+        let timescaled_ids: Vec<uuid::Uuid> = timescaled_scores.iter().map(|(id, _)| *id).collect();
+
+        let direct_ids: Vec<uuid::Uuid> = results_before_association.clone();
+
+        {
+            let graph = &mut guard.graph;
+            for i in 0..direct_ids.len() {
+                for j in (i + 1)..direct_ids.len() {
+                    apply_stdp(graph, &direct_ids[i], &direct_ids[j], now);
+                }
+            }
+        }
+
+        let expanded: Vec<&CognitiveMemoryUnit> = {
+            let expanded_ids = guard.graph.spreading_activation(&direct_ids, 3, 0.5, 0.1);
+            expanded_ids
+                .iter()
+                .filter_map(|(id, _, _)| guard.graph.get_memory(id))
+                .collect()
+        };
+
+        let mut results: Vec<&CognitiveMemoryUnit> = results_before_association
+            .iter()
+            .filter_map(|id| guard.graph.get_memory(id))
+            .chain(expanded.into_iter())
             .filter(|m| m.metadata.base_activation >= min_activation && scope_matches(m))
             .collect();
 
-        let direct_ids: Vec<uuid::Uuid> = results.iter().map(|m| m.id).collect();
-        expand_with_associations(&direct_ids, &mut results, &guard.graph);
-        results.retain(|m| m.metadata.base_activation >= min_activation && scope_matches(m));
         dedup_memories(&mut results);
 
         results.sort_by(|a, b| {
-            b.metadata
-                .base_activation
-                .partial_cmp(&a.metadata.base_activation)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let pos_a = timescaled_ids.iter().position(|id| *id == a.id).unwrap_or(usize::MAX);
+            let pos_b = timescaled_ids.iter().position(|id| *id == b.id).unwrap_or(usize::MAX);
+            pos_a.cmp(&pos_b)
         });
 
         let slm_results: Vec<usize> = {
@@ -1874,6 +1962,120 @@ impl CogniMemServer {
             "conventions": conventions,
             "count": conventions.len()
         })))
+    }
+
+    async fn handle_delegate_to_llm(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("query is required"))?
+            .to_string();
+        let context: Vec<String> = args
+            .get("context")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let confidence_threshold = args
+            .get("confidence_threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.85) as f32;
+
+        let input = DelegateInput {
+            query,
+            context,
+            confidence_threshold,
+        };
+        let guard = self.state.lock().await;
+        let output = match guard.slm.delegate_to_llm(input.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("Falling back to noop delegate_to_llm: {e}");
+                guard.slm.delegate_to_llm(input).await.map_err(|fallback| slm_failed("delegate_to_llm", "noop", fallback))?
+            }
+        };
+
+        Ok(success_json(&output))
+    }
+
+    async fn handle_teach_from_demonstration(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let demonstration = args
+            .get("demonstration")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("demonstration is required"))?
+            .to_string();
+        let pattern_extracted = args
+            .get("pattern_extracted")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default();
+        let domain = args
+            .get("domain")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let source_type = args
+            .get("source_type")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let input = TeachFromDemonstrationInput {
+            demonstration,
+            pattern_extracted,
+            domain,
+            source_type,
+        };
+        let guard = self.state.lock().await;
+        let output = match guard.slm.teach_from_demonstration(input.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("Falling back to noop teach_from_demonstration: {e}");
+                guard.slm.teach_from_demonstration(input).await.map_err(|fallback| slm_failed("teach_from_demonstration", "noop", fallback))?
+            }
+        };
+
+        Ok(success_json(&output))
+    }
+
+    async fn handle_simulate_perspective(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let perspective_role = args
+            .get("perspective_role")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("perspective_role is required"))?
+            .to_string();
+        let situation = args
+            .get("situation")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("situation is required"))?
+            .to_string();
+        let question = args
+            .get("question")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("question is required"))?
+            .to_string();
+
+        let input = SimulatePerspectiveInput {
+            perspective_role,
+            situation,
+            question,
+        };
+        let guard = self.state.lock().await;
+        let output = match guard.slm.simulate_perspective(input.clone()).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("Falling back to noop simulate_perspective: {e}");
+                guard.slm.simulate_perspective(input).await.map_err(|fallback| slm_failed("simulate_perspective", "noop", fallback))?
+            }
+        };
+
+        Ok(success_json(&output))
     }
 }
 
