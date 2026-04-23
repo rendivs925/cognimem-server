@@ -155,7 +155,7 @@ mod tests {
             agent_id: "agent-1".to_string(),
         };
         let serialized = event.serialize();
-        assert!(serialized.contains("claim:started"));
+        assert!(serialized.contains("ClaimStarted"));
     }
 
     #[test]
