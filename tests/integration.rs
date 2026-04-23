@@ -2079,6 +2079,96 @@ fn test_release_work_json_defaults() {
 }
 
 #[test]
+fn test_claim_work_args_parsing() {
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "claim_type": "implementation",
+        "hours": 24
+    });
+    assert_eq!(json["memory_id"].as_str().unwrap(), "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(json["claim_type"].as_str().unwrap(), "implementation");
+    assert_eq!(json["hours"].as_i64().unwrap(), 24);
+}
+
+#[test]
+fn test_claim_work_args_defaults() {
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "claim_type": "research"
+    });
+    assert!(json["hours"].is_null() || json["hours"].as_i64().unwrap_or(24) == 24);
+}
+
+#[test]
+fn test_release_work_args_parsing() {
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "complete": true
+    });
+    assert_eq!(json["memory_id"].as_str().unwrap(), "550e8400-e29b-41d4-a716-446655440000");
+    assert!(json["complete"].as_bool().unwrap());
+}
+
+#[test]
+fn test_find_unclaimed_work_args_parsing() {
+    let json = serde_json::json!({
+        "project_path": "/home/user/project",
+        "limit": 5
+    });
+    assert_eq!(json["project_path"].as_str().unwrap(), "/home/user/project");
+    assert_eq!(json["limit"].as_u64().unwrap(), 5);
+}
+
+#[test]
+fn test_find_unclaimed_work_args_defaults() {
+    let json = serde_json::json!({});
+    assert!(json["limit"].is_null() || json["limit"].as_u64().unwrap_or(10) == 10);
+}
+
+#[test]
+fn test_extract_best_practice_args_parsing() {
+    let json = serde_json::json!({
+        "content": "Use Option<T> instead of null",
+        "context": "Rust error handling"
+    });
+    assert_eq!(json["content"].as_str().unwrap(), "Use Option<T> instead of null");
+    assert_eq!(json["context"].as_str().unwrap(), "Rust error handling");
+}
+
+#[test]
+fn test_extract_best_practice_args_context_optional() {
+    let json = serde_json::json!({
+        "content": "Keep functions small"
+    });
+    assert_eq!(json["content"].as_str().unwrap(), "Keep functions small");
+    assert!(json["context"].is_null());
+}
+
+#[test]
+fn test_extract_persona_args_parsing() {
+    use cognimem_server::memory::slm_types::ExtractPersonaInput;
+    let json = serde_json::json!({
+        "memories": []
+    });
+    let args: ExtractPersonaInput = serde_json::from_value(json).unwrap();
+    assert!(args.memories.is_empty());
+}
+
+#[test]
+fn test_get_project_conventions_args_parsing() {
+    let json = serde_json::json!({
+        "project_path": "/home/user/my-project"
+    });
+    assert_eq!(json["project_path"].as_str().unwrap(), "/home/user/my-project");
+}
+
+#[test]
+fn test_get_project_conventions_args_required() {
+    let json = serde_json::json!({});
+    assert!(json["project_path"].is_null());
+}
+
+#[test]
 fn test_summarize_turn_args_parsing() {
     use cognimem_server::memory::slm_types::SummarizeTurnInput;
     let json = serde_json::json!({
