@@ -2,6 +2,7 @@
 //!
 //! Tests the MCP tools, resources, and core functionality.
 
+use cognimem_server::broker::BrokerEvent;
 use cognimem_server::embeddings::{EmbeddingEngine, HashEmbedding, cosine_similarity, fuse_scores};
 use cognimem_server::memory::CompletePatternArgs;
 use cognimem_server::memory::slm_types::{
@@ -1722,5 +1723,327 @@ mod capture_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[test]
+fn test_delegate_args_parsing() {
+    use cognimem_server::memory::slm_types::DelegateInput;
+    let json = serde_json::json!({
+        "query": "how do I fix this bug",
+        "context": ["context line 1", "context line 2"],
+        "confidence_threshold": 0.7
+    });
+    let args: DelegateInput = serde_json::from_value(json).unwrap();
+    assert_eq!(args.query, "how do I fix this bug");
+    assert_eq!(args.context.len(), 2);
+    assert_eq!(args.confidence_threshold, 0.7);
+}
+
+#[test]
+fn test_teach_args_parsing() {
+    use cognimem_server::memory::slm_types::TeachFromDemonstrationInput;
+    let json = serde_json::json!({
+        "demonstration": "showed how to fix the bug",
+        "pattern_extracted": "fix_bug_steps",
+        "domain": "debugging"
+    });
+    let args: TeachFromDemonstrationInput = serde_json::from_value(json).unwrap();
+    assert_eq!(args.demonstration, "showed how to fix the bug");
+    assert_eq!(args.pattern_extracted, "fix_bug_steps");
+    assert_eq!(args.domain, Some("debugging".to_string()));
+}
+
+#[test]
+fn test_simulate_perspective_args_parsing() {
+    use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
+    let json = serde_json::json!({
+        "perspective_role": "security_expert",
+        "situation": "user wants to store passwords",
+        "question": "should we store this?"
+    });
+    let args: SimulatePerspectiveInput = serde_json::from_value(json).unwrap();
+    assert_eq!(args.perspective_role, "security_expert");
+    assert_eq!(args.situation, "user wants to store passwords");
+    assert_eq!(args.question, "should we store this?");
+}
+
+#[test]
+fn test_delegate_output_structure() {
+    use cognimem_server::memory::slm_types::DelegateOutput;
+    let output = DelegateOutput {
+        response: "delegated response".to_string(),
+        delegated: true,
+        confidence: 0.7,
+        model_used: "qwen2.5-coder:3b".to_string(),
+        reasoning: Some("below threshold".to_string()),
+    };
+    assert!(output.delegated);
+    assert_eq!(output.confidence, 0.7);
+    let json = serde_json::to_string(&output).unwrap();
+    assert!(json.contains("delegated response"));
+}
+
+#[test]
+fn test_teach_output_structure() {
+    use cognimem_server::memory::slm_types::TeachFromDemonstrationOutput;
+    let output = TeachFromDemonstrationOutput {
+        episodic_memory_id: Uuid::new_v4(),
+        skill_pending: true,
+        promotion_candidates: vec![],
+        confidence: 0.6,
+    };
+    assert!(output.skill_pending);
+    let json = serde_json::to_string(&output).unwrap();
+    assert!(json.contains("episodic_memory_id"));
+}
+
+#[test]
+fn test_simulate_perspective_output_structure() {
+    use cognimem_server::memory::slm_types::SimulatePerspectiveOutput;
+    let output = SimulatePerspectiveOutput {
+        reasoning: "from security perspective".to_string(),
+        recommendation: "do not store".to_string(),
+        confidence: 0.5,
+        alternative_perspectives: vec!["end_user".to_string()],
+    };
+    assert_eq!(output.recommendation, "do not store");
+    let json = serde_json::to_string(&output).unwrap();
+    assert!(json.contains("alternative_perspectives"));
+}
+
+#[test]
+fn test_rank_by_timescale_affects_order() {
+    use cognimem_server::memory::{rank_by_timescale, TimescaleKind};
+    use cognimem_server::embeddings::HashEmbedding;
+
+    let mut graph = MemoryGraph::new();
+    let embedder = HashEmbedding::new();
+
+    let sensory_id = graph.add_memory(make_memory("recent sensory", MemoryTier::Sensory));
+    let semantic_id = graph.add_memory(make_memory("old semantic", MemoryTier::Semantic));
+    graph.get_memory_mut(&sensory_id).unwrap().metadata.base_activation = 0.8;
+    graph.get_memory_mut(&semantic_id).unwrap().metadata.base_activation = 0.5;
+
+    let scored = vec![
+        (sensory_id, 0.8),
+        (semantic_id, 0.5),
+    ];
+
+    let ranked = rank_by_timescale(&mut graph, scored);
+
+    assert_eq!(ranked.len(), 2);
+    let ids: Vec<_> = ranked.iter().map(|(id, _)| *id).collect();
+    assert!(ids.contains(&sensory_id));
+    assert!(ids.contains(&semantic_id));
+}
+
+#[test]
+fn test_apply_stdp_strengthens_association() {
+    use cognimem_server::memory::apply_stdp;
+
+    let mut graph = MemoryGraph::new();
+    let id1 = graph.add_memory(make_memory("memory A", MemoryTier::Episodic));
+    let id2 = graph.add_memory(make_memory("memory B", MemoryTier::Episodic));
+
+    assert!(graph.get_association_strength(&id1, &id2).is_none());
+
+    let now = chrono::Utc::now().timestamp();
+    apply_stdp(&mut graph, &id1, &id2, now);
+
+    let strength = graph.get_association_strength(&id1, &id2).unwrap();
+    assert!(strength >= 0.5);
+}
+
+#[test]
+fn test_dual_timescale_manager_explore_vs_exploit() {
+    use cognimem_server::memory::{DualTimescaleManager, TimescaleKind};
+
+    let manager = DualTimescaleManager::new();
+
+    let fast_tier = MemoryTier::Sensory;
+    let slow_tier = MemoryTier::Semantic;
+
+    let fast_kind = TimescaleKind::from_tier(fast_tier);
+    let slow_kind = TimescaleKind::from_tier(slow_tier);
+
+    assert_eq!(fast_kind, TimescaleKind::Fast);
+    assert_eq!(slow_kind, TimescaleKind::Slow);
+}
+
+#[test]
+fn test_broker_event_all_variants_serialize() {
+    use cognimem_server::broker::BrokerEvent;
+
+    let events = vec![
+        BrokerEvent::ClaimStarted {
+            session_id: Uuid::new_v4(),
+            memory_id: Uuid::new_v4(),
+            claim_type: "implementation".to_string(),
+            agent_id: "agent-1".to_string(),
+        },
+        BrokerEvent::ClaimCompleted {
+            session_id: Uuid::new_v4(),
+            memory_id: Uuid::new_v4(),
+            agent_id: "agent-1".to_string(),
+        },
+        BrokerEvent::ClaimReleased {
+            session_id: Uuid::new_v4(),
+            memory_id: Uuid::new_v4(),
+            agent_id: "agent-1".to_string(),
+        },
+        BrokerEvent::MemoryUpdated {
+            memory_id: Uuid::new_v4(),
+            action: "remember".to_string(),
+            agent_id: "agent-1".to_string(),
+        },
+        BrokerEvent::ConflictDetected {
+            memory_a: Uuid::new_v4(),
+            memory_b: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+        },
+        BrokerEvent::SessionJoined {
+            session_id: Uuid::new_v4(),
+            project_path: "/test/project".to_string(),
+            agent_id: "agent-1".to_string(),
+        },
+        BrokerEvent::SessionLeft {
+            session_id: Uuid::new_v4(),
+            agent_id: "agent-1".to_string(),
+        },
+    ];
+
+    for event in events {
+        let serialized = event.serialize();
+        assert!(!serialized.is_empty(), "Event should serialize to non-empty string");
+        let topic = event.topic();
+        assert!(!topic.is_empty(), "Event should have a topic");
+    }
+}
+
+#[test]
+fn test_broker_event_roundtrip() {
+    use cognimem_server::broker::BrokerEvent;
+
+    let original = BrokerEvent::ClaimStarted {
+        session_id: Uuid::new_v4(),
+        memory_id: Uuid::new_v4(),
+        claim_type: "testing".to_string(),
+        agent_id: "agent-2".to_string(),
+    };
+
+    let topic = original.topic();
+    let serialized = original.serialize();
+
+    let deserialized = BrokerEvent::deserialize(topic, &serialized).unwrap();
+
+    match (&original, &deserialized) {
+        (
+            BrokerEvent::ClaimStarted { memory_id: a_id, .. },
+            BrokerEvent::ClaimStarted { memory_id: b_id, .. },
+        ) => {
+            assert_eq!(a_id, b_id);
+        }
+        _ => panic!("Variant mismatch after roundtrip"),
+    }
+}
+
+#[test]
+fn test_broker_simple_broker_noop() {
+    use cognimem_server::broker::SimpleBroker;
+
+    let broker = SimpleBroker::new();
+    assert!(!broker.is_connected());
+
+    let event = BrokerEvent::ClaimStarted {
+        session_id: Uuid::new_v4(),
+        memory_id: Uuid::new_v4(),
+        claim_type: "research".to_string(),
+        agent_id: "noop".to_string(),
+    };
+
+    let result = broker.publish(&event);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_redis_broker_not_connected_is_noop() {
+    use cognimem_server::broker::RedisBroker;
+
+    let broker = RedisBroker::new(
+        "redis://localhost:6379".to_string(),
+        "test-agent".to_string(),
+    );
+
+    assert!(!broker.is_connected());
+
+    let event = BrokerEvent::MemoryUpdated {
+        memory_id: Uuid::new_v4(),
+        action: "recall".to_string(),
+        agent_id: "test-agent".to_string(),
+    };
+
+    let result = broker.publish(&event);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_timescale_manager_with_custom_weights() {
+    use cognimem_server::memory::DualTimescaleManager;
+
+    let manager = DualTimescaleManager::with_weights(0.2, 0.8);
+    let memory = make_memory("test", MemoryTier::Episodic);
+    let now = chrono::Utc::now().timestamp();
+
+    let score = manager.compute_recall_score(&memory, now);
+    assert!(score >= 0.0 && score <= 2.0);
+}
+
+#[test]
+fn test_teach_from_demonstration_input_all_fields() {
+    use cognimem_server::memory::slm_types::TeachFromDemonstrationInput;
+
+    let input = TeachFromDemonstrationInput {
+        demonstration: "step 1: do this, step 2: do that".to_string(),
+        pattern_extracted: "step_based_process".to_string(),
+        domain: Some("automation".to_string()),
+        source_type: Some("observation".to_string()),
+    };
+
+    let json = serde_json::to_string(&input).unwrap();
+    assert!(json.contains("step_based_process"));
+    assert!(json.contains("automation"));
+}
+
+#[test]
+fn test_delegate_with_empty_context() {
+    use cognimem_server::memory::slm_types::DelegateInput;
+
+    let json = serde_json::json!({
+        "query": "simple question",
+        "confidence_threshold": 0.9
+    });
+    let args: DelegateInput = serde_json::from_value(json).unwrap();
+    assert_eq!(args.query, "simple question");
+    assert!(args.context.is_empty());
+    assert_eq!(args.confidence_threshold, 0.9);
+}
+
+#[test]
+fn test_simulate_perspective_multiple_roles() {
+    use cognimem_server::memory::slm_types::SimulatePerspectiveOutput;
+
+    let roles = vec!["security_expert", "end_user", "senior_developer", "product_manager"];
+
+    for role in roles {
+        let output = SimulatePerspectiveOutput {
+            reasoning: format!("reasoning from {}", role),
+            recommendation: format!("recommend for {}", role),
+            confidence: 0.5,
+            alternative_perspectives: vec![],
+        };
+
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains(role), "Output should contain role: {}", role);
     }
 }

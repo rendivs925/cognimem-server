@@ -208,6 +208,7 @@ pub struct ExtractBestPracticeOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegateInput {
     pub query: String,
+    #[serde(default)]
     pub context: Vec<String>,
     pub confidence_threshold: f32,
 }
