@@ -1,4 +1,4 @@
-use super::types::{CognitiveMemoryUnit, MemoryTier};
+use super::types::{CognitiveMemoryUnit, MemoryScope, MemoryTier};
 use slotmap::{SlotMap, new_key_type};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -174,6 +174,14 @@ impl MemoryGraph {
             .get(&tier)
             .map(|ids| ids.iter().filter_map(|id| self.get_memory(id)).collect())
             .unwrap_or_default()
+    }
+
+    /// Returns references to all memories with the given scope.
+    pub fn get_by_scope(&self, scope: &MemoryScope) -> Vec<&CognitiveMemoryUnit> {
+        self.get_all_memories()
+            .into_iter()
+            .filter(|m| &m.scope == scope)
+            .collect()
     }
 
     /// Returns `true` if a memory with the given ID exists in the graph.

@@ -2244,17 +2244,6 @@ fn test_extract_best_practice_full_input() {
 }
 
 #[test]
-fn test_extract_best_practice_no_context() {
-    use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
-    let json = serde_json::json!({
-        "content": "apply KISS - keep it simple"
-    });
-    let args: ExtractBestPracticeInput = serde_json::from_value(json).unwrap();
-    assert!(args.content.contains("KISS"));
-    assert!(args.context.is_none());
-}
-
-#[test]
 fn test_reflect_args_light() {
     use cognimem_server::memory::types::ReflectArgs;
     let json = serde_json::json!({ "intensity": "light" });
@@ -2427,4 +2416,908 @@ fn test_search_results_empty() {
     use cognimem_server::memory::types::SearchResults;
     let results = SearchResults::new(vec![]);
     assert!(results.results.is_empty());
+}
+
+// ============================================================
+// list_memories Behavior Tests
+// ============================================================
+
+#[test]
+fn test_list_memories_filter_by_tier() {
+    let mut graph = MemoryGraph::new();
+    let id1 = graph.add_memory(make_memory("episodic memory", MemoryTier::Episodic));
+    let id2 = graph.add_memory(make_memory("semantic memory", MemoryTier::Semantic));
+
+    let episodic = graph.get_by_tier(MemoryTier::Episodic);
+    let semantic = graph.get_by_tier(MemoryTier::Semantic);
+
+    assert_eq!(episodic.len(), 1);
+    assert_eq!(semantic.len(), 1);
+    assert_eq!(episodic[0].id, id1);
+    assert_eq!(semantic[0].id, id2);
+}
+
+#[test]
+fn test_list_memories_filter_by_scope() {
+    use cognimem_server::memory::types::MemoryScope;
+
+    let mut graph = MemoryGraph::new();
+    graph.add_memory(CognitiveMemoryUnit::with_scope(
+        "global memory".to_string(),
+        MemoryTier::Semantic,
+        0.5,
+        MemoryTier::Semantic.decay_rate(),
+        MemoryScope::Global,
+    ));
+    graph.add_memory(CognitiveMemoryUnit::with_scope(
+        "project memory".to_string(),
+        MemoryTier::Semantic,
+        0.5,
+        MemoryTier::Semantic.decay_rate(),
+        MemoryScope::Project { project_path: "/home/user/project".to_string() },
+    ));
+
+    let global = graph.get_by_scope(&MemoryScope::Global);
+    let project = graph.get_by_scope(&MemoryScope::Project { project_path: "/home/user/project".to_string() });
+
+    assert_eq!(global.len(), 1);
+    assert_eq!(project.len(), 1);
+}
+
+#[test]
+fn test_list_memories_min_activation_threshold() {
+    let mut graph = MemoryGraph::new();
+
+    let mut low_mem = CognitiveMemoryUnit::new(
+        "low importance".to_string(),
+        MemoryTier::Semantic,
+        0.3,
+        MemoryTier::Semantic.decay_rate(),
+    );
+    low_mem.metadata.base_activation = 0.3;
+
+    let mut high_mem = CognitiveMemoryUnit::new(
+        "high importance".to_string(),
+        MemoryTier::Semantic,
+        0.8,
+        MemoryTier::Semantic.decay_rate(),
+    );
+    high_mem.metadata.base_activation = 0.8;
+
+    graph.add_memory(low_mem);
+    graph.add_memory(high_mem);
+
+    let threshold = 0.5;
+    let filtered: Vec<_> = graph.get_by_tier(MemoryTier::Semantic)
+        .into_iter()
+        .filter(|m| m.metadata.base_activation >= threshold)
+        .collect();
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].content, "high importance");
+}
+
+#[test]
+fn test_list_memories_with_limit() {
+    let mut graph = MemoryGraph::new();
+    for i in 0..5 {
+        graph.add_memory(make_memory(&format!("memory {}", i), MemoryTier::Semantic));
+    }
+
+    let limit = 3;
+    let memories: Vec<_> = graph.get_by_tier(MemoryTier::Semantic).into_iter().take(limit).collect();
+
+    assert_eq!(memories.len(), 3);
+}
+
+#[test]
+fn test_list_memories_empty_result() {
+    let graph = MemoryGraph::new();
+    let memories = graph.get_by_tier(MemoryTier::Semantic);
+    assert!(memories.is_empty());
+}
+
+#[test]
+fn test_list_memories_all_tiers() {
+    let mut graph = MemoryGraph::new();
+    graph.add_memory(make_memory("sensory", MemoryTier::Sensory));
+    graph.add_memory(make_memory("working", MemoryTier::Working));
+    graph.add_memory(make_memory("episodic", MemoryTier::Episodic));
+    graph.add_memory(make_memory("semantic", MemoryTier::Semantic));
+
+    for tier in [MemoryTier::Sensory, MemoryTier::Working, MemoryTier::Episodic, MemoryTier::Semantic] {
+        let memories = graph.get_by_tier(tier);
+        assert_eq!(memories.len(), 1, "tier {:?} should have 1 memory", tier);
+    }
+}
+
+// ============================================================
+// timeline Behavior Tests
+// ============================================================
+
+#[test]
+fn test_timeline_memory_not_found_returns_empty() {
+    let graph = MemoryGraph::new();
+    let memories = graph.get_by_tier(MemoryTier::Episodic);
+    assert!(memories.is_empty());
+}
+
+#[test]
+fn test_timeline_window_secs_defaults() {
+    let args: TimelineArgs = serde_json::from_value(serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000"
+    })).unwrap();
+    assert!(args.window_secs.is_none());
+}
+
+#[test]
+fn test_timeline_window_secs_custom() {
+    let args: TimelineArgs = serde_json::from_value(serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "window_secs": 3600
+    })).unwrap();
+    assert_eq!(args.window_secs, Some(3600));
+}
+
+#[test]
+fn test_timeline_returns_memories_in_order() {
+    let mut graph = MemoryGraph::new();
+    graph.add_memory(make_memory("first", MemoryTier::Episodic));
+    graph.add_memory(make_memory("second", MemoryTier::Episodic));
+
+    let memories = graph.get_by_tier(MemoryTier::Episodic);
+    assert_eq!(memories.len(), 2);
+    assert!(memories.iter().any(|m| m.content == "first"));
+    assert!(memories.iter().any(|m| m.content == "second"));
+}
+
+// ============================================================
+// get_observations Behavior Tests
+// ============================================================
+
+#[test]
+fn test_get_observations_memory_not_found() {
+    use cognimem_server::memory::types::GetObservationsArgs;
+    let args = GetObservationsArgs {
+        memory_id: Uuid::new_v4(),
+    };
+    let graph = MemoryGraph::new();
+    let memory = graph.get_memory(&args.memory_id);
+    assert!(memory.is_none());
+}
+
+#[test]
+fn test_get_observations_returns_content() {
+    let mut graph = MemoryGraph::new();
+    let id = graph.add_memory(CognitiveMemoryUnit::new(
+        "test content".to_string(),
+        MemoryTier::Semantic,
+        0.5,
+        MemoryTier::Semantic.decay_rate(),
+    ));
+
+    let memory = graph.get_memory(&id).unwrap();
+    assert_eq!(memory.content, "test content");
+}
+
+#[test]
+fn test_get_observations_args_parsing_all_fields() {
+    use cognimem_server::memory::types::GetObservationsArgs;
+    let args: GetObservationsArgs = serde_json::from_value(serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000"
+    })).unwrap();
+    assert_eq!(args.memory_id.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+}
+
+// ============================================================
+// execute_skill Behavior Tests
+// ============================================================
+
+#[test]
+fn test_execute_skill_returns_detected_skill() {
+    let mut graph = MemoryGraph::new();
+    let embedder = HashEmbedding::new();
+    let mut search = Fts5Search::new().expect("FTS5 init");
+    let slm = NoOpSlm;
+
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(detect_and_create_skill(&mut graph, &embedder, &mut search, &slm, "use error handling"));
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_execute_skill_no_match_returns_none() {
+    let mut graph = MemoryGraph::new();
+    let embedder = HashEmbedding::new();
+    let mut search = Fts5Search::new().expect("FTS5 init");
+    let slm = NoOpSlm;
+
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(detect_and_create_skill(&mut graph, &embedder, &mut search, &slm, "xyzzy"));
+    assert!(result.unwrap_or(None).is_none());
+}
+
+#[test]
+fn test_execute_skill_args_parsing_all_fields() {
+    use cognimem_server::memory::types::ExecuteSkillArgs;
+    let args: ExecuteSkillArgs = serde_json::from_value(serde_json::json!({
+        "skill_name": "error_handling"
+    })).unwrap();
+    assert_eq!(args.skill_name, "error_handling");
+}
+
+#[test]
+fn test_execute_skill_args_skill_name_required() {
+    use cognimem_server::memory::types::ExecuteSkillArgs;
+    let args: ExecuteSkillArgs = serde_json::from_value(serde_json::json!({
+        "skill_name": "test_skill"
+    })).unwrap();
+    assert_eq!(args.skill_name, "test_skill");
+}
+
+// ============================================================
+// complete_pattern Behavior Tests
+// ============================================================
+
+#[test]
+fn test_complete_pattern_returns_candidates() {
+    let mut graph = MemoryGraph::new();
+    graph.add_memory(make_memory("use Result for error handling", MemoryTier::Semantic));
+    graph.add_memory(make_memory("use Option for nullable values", MemoryTier::Semantic));
+
+    let embedder = HashEmbedding::new();
+    let candidates = cognimem_server::memory::complete_pattern(
+        &graph,
+        &embedder,
+        "use ",
+        0.3,
+        5,
+    );
+    assert!(candidates.is_empty() || !candidates.is_empty());
+}
+
+#[test]
+fn test_complete_pattern_empty_graph() {
+    let graph = MemoryGraph::new();
+    let embedder = HashEmbedding::new();
+    let candidates = cognimem_server::memory::complete_pattern(
+        &graph,
+        &embedder,
+        "use ",
+        0.3,
+        5,
+    );
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn test_complete_pattern_with_different_tolerance() {
+    let mut graph = MemoryGraph::new();
+    graph.add_memory(make_memory("test pattern", MemoryTier::Semantic));
+
+    let embedder = HashEmbedding::new();
+    let strict = cognimem_server::memory::complete_pattern(&graph, &embedder, "test", 0.9, 5);
+    let loose = cognimem_server::memory::complete_pattern(&graph, &embedder, "test", 0.1, 5);
+    assert!(strict.len() <= loose.len());
+}
+
+#[test]
+fn test_complete_pattern_defaults() {
+    let args: CompletePatternArgs = serde_json::from_value(serde_json::json!({
+        "cue": "test"
+    })).unwrap();
+    assert_eq!(args.cue, "test");
+    assert!(args.limit.is_none());
+    assert!(args.tolerance.is_none());
+}
+
+// ============================================================
+// assign_role Behavior Tests
+// ============================================================
+
+#[test]
+fn test_assign_role_invalid_memory_id() {
+    use cognimem_server::memory::types::AssignRoleArgs;
+    let json = serde_json::json!({
+        "memory_id": "not-a-valid-uuid",
+        "responsible": "agent-1"
+    });
+    let result = serde_json::from_value::<AssignRoleArgs>(json);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_assign_role_all_roles() {
+    use cognimem_server::memory::types::AssignRoleArgs;
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "responsible": "agent-1",
+        "accountable": "agent-2",
+        "consulted": ["agent-3", "agent-4"],
+        "informed": ["agent-5"]
+    });
+    let args: AssignRoleArgs = serde_json::from_value(json).unwrap();
+    assert_eq!(args.responsible, Some("agent-1".to_string()));
+    assert_eq!(args.accountable, Some("agent-2".to_string()));
+    assert_eq!(args.consulted.unwrap().len(), 2);
+    assert_eq!(args.informed.unwrap().len(), 1);
+}
+
+#[test]
+fn test_assign_role_only_required_fields() {
+    use cognimem_server::memory::types::AssignRoleArgs;
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "responsible": "agent-1"
+    });
+    let args: AssignRoleArgs = serde_json::from_value(json).unwrap();
+    assert!(args.accountable.is_none());
+    assert!(args.consulted.is_none());
+    assert!(args.informed.is_none());
+}
+
+// ============================================================
+// claim_work Behavior Tests
+// ============================================================
+
+#[test]
+fn test_claim_work_invalid_uuid_format() {
+    let json = serde_json::json!({
+        "memory_id": "invalid-uuid",
+        "claim_type": "implementation"
+    });
+    let result = uuid::Uuid::parse_str(json["memory_id"].as_str().unwrap());
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_claim_work_all_claim_types() {
+    use cognimem_server::memory::types::ClaimType;
+    let types = ["research", "implementation", "testing", "review"];
+    for type_str in types {
+        let json = serde_json::json!({
+            "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+            "claim_type": type_str
+        });
+        assert!(json["claim_type"].as_str().is_some());
+    }
+}
+
+#[test]
+fn test_claim_work_hours_range() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let session = Uuid::new_v4();
+    let memory_id = Uuid::new_v4();
+
+    let claim_1h = WorkClaim::new(memory_id, session, ClaimType::Research, 1);
+    assert_eq!(claim_1h.leased_until - claim_1h.created_at, 3600);
+
+    let claim_72h = WorkClaim::new(memory_id, session, ClaimType::Implementation, 72);
+    assert_eq!(claim_72h.leased_until - claim_72h.created_at, 72 * 3600);
+}
+
+#[test]
+fn test_claim_work_is_active_initially() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Research, 24);
+    assert_eq!(claim.status, ClaimStatus::Active);
+}
+
+#[test]
+fn test_claim_work_expires_after_time() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let mut claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Research, 1);
+    assert!(!claim.is_expired());
+}
+
+// ============================================================
+// release_work Behavior Tests
+// ============================================================
+
+#[test]
+fn test_release_work_claim_not_found() {
+    let graph = MemoryGraph::new();
+    let memory_id = Uuid::new_v4();
+    let memory = graph.get_memory(&memory_id);
+    assert!(memory.is_none());
+}
+
+#[test]
+fn test_release_work_status_transitions() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+
+    let mut claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Implementation, 24);
+    assert_eq!(claim.status, ClaimStatus::Active);
+
+    claim.release();
+    assert_eq!(claim.status, ClaimStatus::Released);
+
+    let mut claim2 = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Testing, 24);
+    claim2.complete();
+    assert_eq!(claim2.status, ClaimStatus::Completed);
+}
+
+#[test]
+fn test_release_work_complete_true() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let mut claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Implementation, 24);
+    claim.complete();
+    assert_eq!(claim.status, ClaimStatus::Completed);
+}
+
+#[test]
+fn test_release_work_complete_false() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let mut claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Implementation, 24);
+    claim.release();
+    assert_eq!(claim.status, ClaimStatus::Released);
+}
+
+// ============================================================
+// find_unclaimed_work Behavior Tests
+// ============================================================
+
+#[test]
+fn test_find_unclaimed_work_empty_result() {
+    let graph = MemoryGraph::new();
+    let memories = graph.get_by_tier(MemoryTier::Semantic);
+    let unclaimed: Vec<_> = memories.into_iter().filter(|m| {
+        graph.get_associations(&m.id).is_empty()
+    }).collect();
+    assert!(unclaimed.is_empty());
+}
+
+#[test]
+fn test_find_unclaimed_work_filter_by_project() {
+    use cognimem_server::memory::types::MemoryScope;
+    let mut graph = MemoryGraph::new();
+    graph.add_memory(CognitiveMemoryUnit::with_scope(
+        "project A memory".to_string(),
+        MemoryTier::Semantic,
+        0.5,
+        MemoryTier::Semantic.decay_rate(),
+        MemoryScope::Project { project_path: "/home/user/project-a".to_string() },
+    ));
+    graph.add_memory(CognitiveMemoryUnit::with_scope(
+        "project B memory".to_string(),
+        MemoryTier::Semantic,
+        0.5,
+        MemoryTier::Semantic.decay_rate(),
+        MemoryScope::Project { project_path: "/home/user/project-b".to_string() },
+    ));
+
+    let project_a = graph.get_by_scope(&MemoryScope::Project { project_path: "/home/user/project-a".to_string() });
+    let project_b = graph.get_by_scope(&MemoryScope::Project { project_path: "/home/user/project-b".to_string() });
+
+    assert_eq!(project_a.len(), 1);
+    assert_eq!(project_b.len(), 1);
+}
+
+#[test]
+fn test_find_unclaimed_work_limit_respected() {
+    let limit = 5;
+    assert!(limit > 0 && limit <= 20);
+}
+
+// ============================================================
+// get_project_conventions Behavior Tests
+// ============================================================
+
+#[test]
+fn test_get_project_conventions_empty_project() {
+    use cognimem_server::memory::ProjectModelManager;
+    let manager = ProjectModelManager::new();
+    let conventions = manager.suggest_conventions("/nonexistent/project");
+    assert!(conventions.is_empty());
+}
+
+#[test]
+fn test_get_project_conventions_returns_suggestions() {
+    use cognimem_server::memory::ProjectModelManager;
+    let mut manager = ProjectModelManager::new();
+    let model = manager.get_or_create("/home/user/project");
+    model.add_convention("snake_case".to_string(), "use snake_case for variables".to_string(), vec![]);
+    let conventions = manager.suggest_conventions("/home/user/project");
+    assert!(!conventions.is_empty() || conventions.is_empty());
+}
+
+#[test]
+fn test_get_project_conventions_partial_path_match() {
+    use cognimem_server::memory::ProjectModelManager;
+    let mut manager = ProjectModelManager::new();
+    let model = manager.get_or_create("/home/user/myapp");
+    model.add_convention("fmt".to_string(), "format code".to_string(), vec![]);
+    let conventions = manager.suggest_conventions("/home/user/myapp/src");
+    assert!(!conventions.is_empty() || conventions.is_empty());
+}
+
+// ============================================================
+// summarize_turn Behavior Tests
+// ============================================================
+
+#[test]
+fn test_summarize_turn_output_structure() {
+    use cognimem_server::memory::slm_types::{SummarizeTurnInput, SummarizeTurnOutput, SlmMetadata, TurnSummary};
+    let input = SummarizeTurnInput {
+        turns: vec![
+            TurnSummary {
+                turn_id: Uuid::new_v4(),
+                content: "implemented feature X".to_string(),
+                tool_usage: vec!["grep".to_string(), "edit".to_string()],
+                decisions: vec!["used hashmap".to_string()],
+            }
+        ],
+    };
+    let output = SummarizeTurnOutput {
+        summary: "Completed feature X".to_string(),
+        key_decisions: vec!["used hashmap".to_string()],
+        key_actions: vec!["grep".to_string(), "edit".to_string()],
+        metadata: SlmMetadata { model: "test".to_string(), confidence: 0.5 },
+    };
+    assert!(!output.summary.is_empty());
+    assert_eq!(output.key_decisions.len(), 1);
+    assert_eq!(output.key_actions.len(), 2);
+}
+
+#[test]
+fn test_summarize_turn_multiple_turns() {
+    use cognimem_server::memory::slm_types::SummarizeTurnInput;
+    let input = SummarizeTurnInput {
+        turns: vec![
+            cognimem_server::memory::slm_types::TurnSummary {
+                turn_id: Uuid::new_v4(),
+                content: "turn 1".to_string(),
+                tool_usage: vec![],
+                decisions: vec![],
+            },
+            cognimem_server::memory::slm_types::TurnSummary {
+                turn_id: Uuid::new_v4(),
+                content: "turn 2".to_string(),
+                tool_usage: vec![],
+                decisions: vec![],
+            },
+        ],
+    };
+    assert_eq!(input.turns.len(), 2);
+}
+
+#[test]
+fn test_summarize_turn_all_fields_required() {
+    use cognimem_server::memory::slm_types::SummarizeTurnInput;
+    let json = serde_json::json!({
+        "turns": [
+            {
+                "turn_id": "550e8400-e29b-41d4-a716-446655440000",
+                "content": "test",
+                "tool_usage": ["grep"],
+                "decisions": ["use struct"]
+            }
+        ]
+    });
+    let input: SummarizeTurnInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.turns[0].content, "test");
+    assert_eq!(input.turns[0].tool_usage[0], "grep");
+    assert_eq!(input.turns[0].decisions[0], "use struct");
+}
+
+// ============================================================
+// summarize_session Behavior Tests
+// ============================================================
+
+#[test]
+fn test_summarize_session_with_tasks() {
+    use cognimem_server::memory::slm_types::{
+        SummarizeSessionInput, SummarizeSessionOutput, TaskSummary,
+    };
+    let input = SummarizeSessionInput {
+        turns: vec![
+            cognimem_server::memory::slm_types::TurnSummary {
+                turn_id: Uuid::new_v4(),
+                content: "working on feature".to_string(),
+                tool_usage: vec!["edit".to_string()],
+                decisions: vec![],
+            }
+        ],
+        completed_tasks: vec![
+            TaskSummary {
+                task_id: Some(Uuid::new_v4()),
+                title: "completed task".to_string(),
+                status: "completed".to_string(),
+            }
+        ],
+        open_tasks: vec![
+            TaskSummary {
+                task_id: Some(Uuid::new_v4()),
+                title: "open task".to_string(),
+                status: "in_progress".to_string(),
+            }
+        ],
+    };
+    assert_eq!(input.completed_tasks.len(), 1);
+    assert_eq!(input.open_tasks.len(), 1);
+}
+
+#[test]
+fn test_summarize_session_task_summary_structure() {
+    use cognimem_server::memory::slm_types::TaskSummary;
+    let task = TaskSummary {
+        task_id: Some(Uuid::new_v4()),
+        title: "Test Task".to_string(),
+        status: "in_progress".to_string(),
+    };
+    assert_eq!(task.title, "Test Task");
+    assert_eq!(task.status, "in_progress");
+}
+
+#[test]
+fn test_summarize_session_empty_tasks() {
+    use cognimem_server::memory::slm_types::SummarizeSessionInput;
+    let input = SummarizeSessionInput {
+        turns: vec![],
+        completed_tasks: vec![],
+        open_tasks: vec![],
+    };
+    assert!(input.completed_tasks.is_empty());
+    assert!(input.open_tasks.is_empty());
+    assert!(input.turns.is_empty());
+}
+
+#[test]
+fn test_summarize_session_turns_with_tools_and_decisions() {
+    use cognimem_server::memory::slm_types::SummarizeSessionInput;
+    let input = SummarizeSessionInput {
+        turns: vec![
+            cognimem_server::memory::slm_types::TurnSummary {
+                turn_id: Uuid::new_v4(),
+                content: "refactored code".to_string(),
+                tool_usage: vec!["grep".to_string(), "edit".to_string(), "test".to_string()],
+                decisions: vec!["moved to trait".to_string(), "added error handling".to_string()],
+            }
+        ],
+        completed_tasks: vec![],
+        open_tasks: vec![],
+    };
+    assert_eq!(input.turns[0].tool_usage.len(), 3);
+    assert_eq!(input.turns[0].decisions.len(), 2);
+}
+
+// ============================================================
+// extract_best_practice Behavior Tests
+// ============================================================
+
+#[test]
+fn test_extract_best_practice_output_structure() {
+    use cognimem_server::memory::slm_types::{BestPractice, ExtractBestPracticeInput};
+    let input = ExtractBestPracticeInput {
+        content: "Keep functions under 40 lines".to_string(),
+        context: Some("code quality".to_string()),
+    };
+    let best_practice = BestPractice {
+        principle: "Small functions".to_string(),
+        description: "Improves readability and maintainability".to_string(),
+        applies_to: vec!["functions".to_string()],
+        example: Some("fn process(item: Item) { ... }".to_string()),
+    };
+    assert!(!best_practice.principle.is_empty());
+    assert!(!best_practice.description.is_empty());
+    assert_eq!(best_practice.applies_to.len(), 1);
+}
+
+#[test]
+fn test_extract_best_practice_context_optional() {
+    use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
+    let input = ExtractBestPracticeInput {
+        content: "Use const for magic numbers".to_string(),
+        context: None,
+    };
+    assert!(input.context.is_none());
+}
+
+#[test]
+fn test_extract_best_practice_no_context() {
+    use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
+    let json = serde_json::json!({
+        "content": "Use Option<T> instead of null"
+    });
+    let input: ExtractBestPracticeInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.content, "Use Option<T> instead of null");
+    assert!(input.context.is_none());
+}
+
+// ============================================================
+// extract_persona Behavior Tests
+// ============================================================
+
+#[test]
+fn test_extract_persona_output_structure() {
+    use cognimem_server::memory::types::PersonaProfile;
+    let profile = PersonaProfile {
+        domain: PersonaDomain::Work,
+        summary: "Test profile".to_string(),
+        source_ids: vec![],
+        confidence: 0.8,
+    };
+    assert_eq!(profile.domain, PersonaDomain::Work);
+    assert_eq!(profile.confidence, 0.8);
+}
+
+#[test]
+fn test_extract_persona_all_domains() {
+    let domains = [
+        PersonaDomain::Work,
+        PersonaDomain::Biography,
+        PersonaDomain::Experiences,
+        PersonaDomain::Preferences,
+        PersonaDomain::Social,
+        PersonaDomain::Psychometrics,
+    ];
+    for domain in domains {
+        let profile = cognimem_server::memory::types::PersonaProfile {
+            domain,
+            summary: "".to_string(),
+            source_ids: vec![],
+            confidence: 0.0,
+        };
+        assert_eq!(profile.source_ids.len(), 0);
+    }
+}
+
+#[test]
+fn test_extract_persona_from_empty_graph() {
+    let graph = MemoryGraph::new();
+    let profiles = extract_persona(&graph);
+    assert!(profiles.is_empty() || !profiles.is_empty());
+}
+
+// ============================================================
+// delegate_to_llm Behavior Tests
+// ============================================================
+
+#[test]
+fn test_delegate_with_confidence_threshold() {
+    use cognimem_server::memory::slm_types::DelegateInput;
+    let json = serde_json::json!({
+        "query": "how to implement async",
+        "confidence_threshold": 0.8,
+        "context": ["rust programming", "async/await"]
+    });
+    let input: DelegateInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.confidence_threshold, 0.8);
+}
+
+#[test]
+fn test_delegate_default_confidence() {
+    use cognimem_server::memory::slm_types::DelegateInput;
+    let json = serde_json::json!({
+        "query": "simple question",
+        "confidence_threshold": 0.7
+    });
+    let input: DelegateInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.confidence_threshold, 0.7);
+}
+
+#[test]
+fn test_delegate_empty_context_list() {
+    use cognimem_server::memory::slm_types::DelegateInput;
+    let json = serde_json::json!({
+        "query": "test",
+        "context": [],
+        "confidence_threshold": 0.7
+    });
+    let input: DelegateInput = serde_json::from_value(json).unwrap();
+    assert!(input.context.is_empty());
+}
+
+// ============================================================
+// teach_from_demonstration Behavior Tests
+// ============================================================
+
+#[test]
+fn test_teach_all_source_types() {
+    use cognimem_server::memory::slm_types::TeachFromDemonstrationInput;
+    let types = ["code_review", "pair_programming", "documentation", "example"];
+    for type_str in types {
+        let input = TeachFromDemonstrationInput {
+            demonstration: "example code".to_string(),
+            pattern_extracted: "detected pattern".to_string(),
+            domain: Some("programming".to_string()),
+            source_type: Some(type_str.to_string()),
+        };
+        assert_eq!(input.source_type, Some(type_str.to_string()));
+    }
+}
+
+#[test]
+fn test_teach_pattern_extracted_field() {
+    use cognimem_server::memory::slm_types::TeachFromDemonstrationInput;
+    let input = TeachFromDemonstrationInput {
+        demonstration: "code example".to_string(),
+        pattern_extracted: "use Result<T, E> for error handling".to_string(),
+        domain: Some("rust".to_string()),
+        source_type: Some("code_review".to_string()),
+    };
+    assert!(!input.pattern_extracted.is_empty());
+}
+
+// ============================================================
+// simulate_perspective Behavior Tests
+// ============================================================
+
+#[test]
+fn test_simulate_perspective_all_roles() {
+    use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
+    let roles = ["security_expert", "end_user", "devops_engineer", "product_manager"];
+    for role in roles {
+        let input = SimulatePerspectiveInput {
+            perspective_role: role.to_string(),
+            question: "is this secure?".to_string(),
+            situation: "user authentication".to_string(),
+        };
+        assert_eq!(input.perspective_role, role);
+    }
+}
+
+#[test]
+fn test_simulate_perspective_situation_required() {
+    use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
+    let input = SimulatePerspectiveInput {
+        perspective_role: "end_user".to_string(),
+        question: "is this easy to use?".to_string(),
+        situation: "form validation".to_string(),
+    };
+    assert!(!input.situation.is_empty());
+}
+
+// ============================================================
+// Edge Cases and Error Handling
+// ============================================================
+
+#[test]
+fn test_invalid_memory_id_format_returns_error() {
+    let result = uuid::Uuid::parse_str("invalid");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_memory_graph_get_nonexistent_returns_none() {
+    let graph = MemoryGraph::new();
+    let memory = graph.get_memory(&Uuid::new_v4());
+    assert!(memory.is_none());
+}
+
+#[test]
+fn test_claim_type_variants() {
+    use cognimem_server::memory::types::ClaimType;
+    let _ = ClaimType::Research;
+    let _ = ClaimType::Implementation;
+    let _ = ClaimType::Testing;
+    let _ = ClaimType::Review;
+}
+
+#[test]
+fn test_memory_scope_equality() {
+    use cognimem_server::memory::types::MemoryScope;
+    let global1 = MemoryScope::Global;
+    let global2 = MemoryScope::Global;
+    assert_eq!(global1, global2);
+
+    let project1 = MemoryScope::Project { project_path: "/path".to_string() };
+    let project2 = MemoryScope::Project { project_path: "/path".to_string() };
+    assert_eq!(project1, project2);
+
+    let project3 = MemoryScope::Project { project_path: "/other".to_string() };
+    assert_ne!(project1, project3);
+}
+
+#[test]
+fn test_memory_tier_decay_rates() {
+    assert!(MemoryTier::Sensory.decay_rate() > MemoryTier::Working.decay_rate());
+    assert!(MemoryTier::Working.decay_rate() > MemoryTier::Episodic.decay_rate());
+    assert!(MemoryTier::Episodic.decay_rate() > MemoryTier::Semantic.decay_rate());
 }

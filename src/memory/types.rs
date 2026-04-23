@@ -319,6 +319,45 @@ impl CognitiveMemoryUnit {
             model: ModelMemoryMetadata::default(),
         }
     }
+
+    /// Creates a new memory unit with a specific scope.
+    pub fn with_scope(
+        content: String,
+        tier: MemoryTier,
+        importance: f32,
+        decay_rate: f32,
+        scope: MemoryScope,
+    ) -> Self {
+        let mut memory = Self::new(content, tier, importance, decay_rate);
+        memory.scope = scope;
+        memory
+    }
+
+    /// Creates a new memory unit with a specific activation/salience level.
+    pub fn with_salience(
+        content: String,
+        tier: MemoryTier,
+        activation: f32,
+        decay_rate: f32,
+        salience: f32,
+    ) -> Self {
+        let mut memory = Self::new(content, tier, activation, decay_rate);
+        memory.metadata.salience = salience;
+        memory
+    }
+
+    /// Creates a new memory unit with observations.
+    pub fn with_observations(
+        content: String,
+        tier: MemoryTier,
+        importance: f32,
+        decay_rate: f32,
+        observations: Vec<String>,
+    ) -> Self {
+        let mut memory = Self::new(content, tier, importance, decay_rate);
+        memory.model.compressed_content = Some(observations.join("; "));
+        memory
+    }
 }
 
 /// Arguments for the `remember` operation.
