@@ -1,14 +1,13 @@
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
-    CompressMemoryInput, CompressMemoryOutput, ConflictKind, DelegateInput, DelegateOutput,
+    CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
     DistillSkillInput, DistillSkillOutput, ExtractBestPracticeInput, ExtractBestPracticeOutput,
     ExtractPersonaInput, ExtractPersonaOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
     TeachFromDemonstrationInput, TeachFromDemonstrationOutput, RerankCandidatesInput,
-    RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
-    SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
+    RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput, SummarizeSessionInput,
+    SummarizeSessionOutput, SummarizeTurnInput,
     SummarizeTurnOutput,
 };
-use super::types::{ConflictResolution, MemoryTier};
 use async_trait::async_trait;
 use std::fmt;
 
@@ -100,89 +99,105 @@ impl SlmEngine for NoOpSlm {
 
     async fn compress_memory(
         &self,
-        _input: CompressMemoryInput,
+        input: CompressMemoryInput,
     ) -> Result<CompressMemoryOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn classify_memory(
         &self,
-        _input: ClassifyMemoryInput,
+        input: ClassifyMemoryInput,
     ) -> Result<ClassifyMemoryOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn rerank_candidates(
         &self,
-        _input: RerankCandidatesInput,
+        input: RerankCandidatesInput,
     ) -> Result<RerankCandidatesOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn resolve_conflict(
         &self,
-        _input: ResolveConflictInput,
+        input: ResolveConflictInput,
     ) -> Result<ResolveConflictOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn extract_persona(
         &self,
-        _input: ExtractPersonaInput,
+        input: ExtractPersonaInput,
     ) -> Result<ExtractPersonaOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
-    async fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
+    async fn distill_skill(
+        &self,
+        input: DistillSkillInput,
+    ) -> Result<DistillSkillOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn complete_pattern(
         &self,
-        _input: CompletePatternInput,
+        input: CompletePatternInput,
     ) -> Result<CompletePatternOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn summarize_turn(
         &self,
-        _input: SummarizeTurnInput,
+        input: SummarizeTurnInput,
     ) -> Result<SummarizeTurnOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn summarize_session(
         &self,
-        _input: SummarizeSessionInput,
+        input: SummarizeSessionInput,
     ) -> Result<SummarizeSessionOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn extract_best_practice(
         &self,
-        _input: ExtractBestPracticeInput,
+        input: ExtractBestPracticeInput,
     ) -> Result<ExtractBestPracticeOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn delegate_to_llm(
         &self,
-        _input: DelegateInput,
+        input: DelegateInput,
     ) -> Result<DelegateOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn teach_from_demonstration(
         &self,
-        _input: TeachFromDemonstrationInput,
+        input: TeachFromDemonstrationInput,
     ) -> Result<TeachFromDemonstrationOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn simulate_perspective(
         &self,
-        _input: SimulatePerspectiveInput,
+        input: SimulatePerspectiveInput,
     ) -> Result<SimulatePerspectiveOutput, SlmError> {
+        drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 }

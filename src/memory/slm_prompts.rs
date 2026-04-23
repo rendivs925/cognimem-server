@@ -1,4 +1,3 @@
-use super::slm::DEFAULT_SLM_MODEL;
 use super::slm_types::{
     ClassifyMemoryInput, CompletePatternInput, CompressMemoryInput, DistillSkillInput,
     ExtractBestPracticeInput, ExtractPersonaInput, RerankCandidatesInput, ResolveConflictInput,
@@ -19,12 +18,6 @@ Rules:
 - Confidence must be a number 0-1.
 - If no items, return [].
 - Strings must be plain text."#;
-
-const EXAMPLE_COMPRESSION: &str = r#"Example: {"summary":"short summary","metadata":{"model":"qwen2.5-coder:3b","confidence":0.5}}"#;
-
-const EXAMPLE_CLASSIFY: &str = r#"Example: {"tier":"episodic","importance":0.5,"suppress":false,"tags":["tag"],"associations":[],"metadata":{"model":"qwen2.5-coder:3b","confidence":0.5}}"#;
-
-const EXAMPLE_RERANK: &str = r#"Example: {"ranked_ids":["uuid1","uuid2"],"metadata":{"model":"qwen2.5-coder:3b","confidence":0.5}}"#;
 
 pub fn compress_memory_prompt(input: &CompressMemoryInput) -> String {
     format!(

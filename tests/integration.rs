@@ -1430,7 +1430,7 @@ fn test_capture_event_to_memory() {
 
 mod capture_tests {
     use cognimem_server::capture::{
-        CanonicalEvent, CanonicalEventType, CapturePipeline, EventSource, IngestResult,
+        CanonicalEvent, CanonicalEventType, CapturePipeline, EventSource,
     };
     use cognimem_server::memory::{InMemoryStore, MemoryGraph};
     use cognimem_server::state::CogniMemState;
@@ -1813,11 +1813,9 @@ fn test_simulate_perspective_output_structure() {
 
 #[test]
 fn test_rank_by_timescale_affects_order() {
-    use cognimem_server::memory::{rank_by_timescale, TimescaleKind};
-    use cognimem_server::embeddings::HashEmbedding;
+    use cognimem_server::memory::rank_by_timescale;
 
     let mut graph = MemoryGraph::new();
-    let embedder = HashEmbedding::new();
 
     let sensory_id = graph.add_memory(make_memory("recent sensory", MemoryTier::Sensory));
     let semantic_id = graph.add_memory(make_memory("old semantic", MemoryTier::Semantic));
@@ -1859,13 +1857,18 @@ fn test_dual_timescale_manager_explore_vs_exploit() {
     use cognimem_server::memory::{DualTimescaleManager, TimescaleKind};
 
     let manager = DualTimescaleManager::new();
+    let now = chrono::Utc::now().timestamp();
 
     let fast_tier = MemoryTier::Sensory;
     let slow_tier = MemoryTier::Semantic;
+    let fast_memory = make_memory("recent sensory", fast_tier);
+    let slow_memory = make_memory("durable semantic", slow_tier);
 
     let fast_kind = TimescaleKind::from_tier(fast_tier);
     let slow_kind = TimescaleKind::from_tier(slow_tier);
 
+    assert!(manager.compute_recall_score(&fast_memory, now) > 0.0);
+    assert!(manager.compute_recall_score(&slow_memory, now) > 0.0);
     assert_eq!(fast_kind, TimescaleKind::Fast);
     assert_eq!(slow_kind, TimescaleKind::Slow);
 }
@@ -2197,7 +2200,7 @@ fn test_summarize_turn_empty_turns() {
 
 #[test]
 fn test_summarize_session_args_parsing() {
-    use cognimem_server::memory::slm_types::{SummarizeSessionInput, TaskSummary};
+    use cognimem_server::memory::slm_types::SummarizeSessionInput;
     let json = serde_json::json!({
         "turns": [
             {
@@ -2308,7 +2311,6 @@ fn test_in_memory_store_overwrite() {
     use cognimem_server::memory::InMemoryStore;
     let store = InMemoryStore::new();
     let mut memory = make_memory("original", MemoryTier::Semantic);
-    let id = memory.id;
     store.save(&memory).unwrap();
 
     memory.metadata.base_activation = 0.2;
@@ -2378,7 +2380,7 @@ fn test_forget_result_soft_delete() {
 
 #[test]
 fn test_work_claim_not_expired() {
-    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
     let session = Uuid::new_v4();
     let memory_id = Uuid::new_v4();
     let claim = WorkClaim::new(memory_id, session, ClaimType::Implementation, 1);
@@ -2777,7 +2779,6 @@ fn test_claim_work_invalid_uuid_format() {
 
 #[test]
 fn test_claim_work_all_claim_types() {
-    use cognimem_server::memory::types::ClaimType;
     let types = ["research", "implementation", "testing", "review"];
     for type_str in types {
         let json = serde_json::json!({
@@ -2790,7 +2791,7 @@ fn test_claim_work_all_claim_types() {
 
 #[test]
 fn test_claim_work_hours_range() {
-    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
     let session = Uuid::new_v4();
     let memory_id = Uuid::new_v4();
 
@@ -2810,8 +2811,8 @@ fn test_claim_work_is_active_initially() {
 
 #[test]
 fn test_claim_work_expires_after_time() {
-    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
-    let mut claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Research, 1);
+    use cognimem_server::memory::types::{ClaimType, WorkClaim};
+    let claim = WorkClaim::new(Uuid::new_v4(), Uuid::new_v4(), ClaimType::Research, 1);
     assert!(!claim.is_expired());
 }
 
@@ -2943,7 +2944,7 @@ fn test_get_project_conventions_partial_path_match() {
 #[test]
 fn test_summarize_turn_output_structure() {
     use cognimem_server::memory::slm_types::{SummarizeTurnInput, SummarizeTurnOutput, SlmMetadata, TurnSummary};
-    let input = SummarizeTurnInput {
+    let turn_input = SummarizeTurnInput {
         turns: vec![
             TurnSummary {
                 turn_id: Uuid::new_v4(),
@@ -2959,6 +2960,7 @@ fn test_summarize_turn_output_structure() {
         key_actions: vec!["grep".to_string(), "edit".to_string()],
         metadata: SlmMetadata { model: "test".to_string(), confidence: 0.5 },
     };
+    assert_eq!(turn_input.turns.len(), 1);
     assert!(!output.summary.is_empty());
     assert_eq!(output.key_decisions.len(), 1);
     assert_eq!(output.key_actions.len(), 2);
@@ -3012,7 +3014,7 @@ fn test_summarize_turn_all_fields_required() {
 #[test]
 fn test_summarize_session_with_tasks() {
     use cognimem_server::memory::slm_types::{
-        SummarizeSessionInput, SummarizeSessionOutput, TaskSummary,
+        SummarizeSessionInput, TaskSummary,
     };
     let input = SummarizeSessionInput {
         turns: vec![
@@ -3103,6 +3105,7 @@ fn test_extract_best_practice_output_structure() {
         applies_to: vec!["functions".to_string()],
         example: Some("fn process(item: Item) { ... }".to_string()),
     };
+    assert_eq!(input.content, "Keep functions under 40 lines");
     assert!(!best_practice.principle.is_empty());
     assert!(!best_practice.description.is_empty());
     assert_eq!(best_practice.applies_to.len(), 1);
@@ -3319,4 +3322,156 @@ fn test_memory_tier_decay_rates() {
     assert!(MemoryTier::Sensory.decay_rate() > MemoryTier::Working.decay_rate());
     assert!(MemoryTier::Working.decay_rate() > MemoryTier::Episodic.decay_rate());
     assert!(MemoryTier::Episodic.decay_rate() > MemoryTier::Semantic.decay_rate());
+}
+
+// ============================================================
+// SLM Operations (Args Parsing & Output Structure)
+// ============================================================
+
+#[test]
+fn test_compress_memory_args_parsing() {
+    use cognimem_server::memory::slm_types::CompressMemoryInput;
+    let json = serde_json::json!({
+        "content": "test content to compress"
+    });
+    let input: CompressMemoryInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.content, "test content to compress");
+}
+
+#[test]
+fn test_compress_memory_with_tier_hint() {
+    use cognimem_server::memory::slm_types::CompressMemoryInput;
+    let json = serde_json::json!({
+        "content": "test",
+        "tier": "semantic"
+    });
+    let input: CompressMemoryInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.content, "test");
+}
+
+#[test]
+fn test_compress_memory_output_structure() {
+    use cognimem_server::memory::slm_types::CompressMemoryOutput;
+    let output = CompressMemoryOutput {
+        summary: "test summary".to_string(),
+        metadata: SlmMetadata {
+            model: "test".to_string(),
+            confidence: 0.5,
+        },
+    };
+    assert_eq!(output.summary, "test summary");
+}
+
+#[test]
+fn test_classify_memory_args_parsing() {
+    use cognimem_server::memory::slm_types::ClassifyMemoryInput;
+    let json = serde_json::json!({
+        "content": "code with bug fix"
+    });
+    let input: ClassifyMemoryInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.content, "code with bug fix");
+}
+
+#[test]
+fn test_classify_memory_output_structure() {
+    use cognimem_server::memory::slm_types::ClassifyMemoryOutput;
+    let output = ClassifyMemoryOutput {
+        tier: MemoryTier::Episodic,
+        importance: 0.7,
+        suppress: false,
+        tags: vec!["bugfix".to_string()],
+        associations: vec![],
+        metadata: SlmMetadata {
+            model: "test".to_string(),
+            confidence: 0.8,
+        },
+    };
+    assert_eq!(output.tier, MemoryTier::Episodic);
+}
+
+#[test]
+fn test_classify_memory_associations_structure() {
+    use cognimem_server::memory::slm_types::{AssociationSuggestion, ClassifyMemoryOutput};
+    let output = ClassifyMemoryOutput {
+        tier: MemoryTier::Semantic,
+        importance: 0.5,
+        suppress: false,
+        tags: vec![],
+        associations: vec![
+            AssociationSuggestion {
+                memory_id: Some(Uuid::new_v4()),
+                label: "related".to_string(),
+                strength: 0.8,
+            },
+        ],
+        metadata: SlmMetadata {
+            model: "test".to_string(),
+            confidence: 0.5,
+        },
+    };
+    assert_eq!(output.associations.len(), 1);
+}
+
+#[test]
+fn test_rerank_candidates_args_parsing() {
+    use cognimem_server::memory::slm_types::RerankCandidatesInput;
+    let json = serde_json::json!({
+        "query": "test query",
+        "candidates": [
+            { "id": "550e8400-e29b-41d4-a716-446655440000", "content": "a", "initial_score": 0.5 }
+        ],
+        "top_n": 3
+    });
+    let input: RerankCandidatesInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.query, "test query");
+    assert_eq!(input.candidates.len(), 1);
+}
+
+#[test]
+fn test_rerank_candidates_output_structure() {
+    use cognimem_server::memory::slm_types::RerankCandidatesOutput;
+    let output = RerankCandidatesOutput {
+        ranked_ids: vec![Uuid::new_v4()],
+        metadata: SlmMetadata {
+            model: "test".to_string(),
+            confidence: 0.6,
+        },
+    };
+    assert_eq!(output.ranked_ids.len(), 1);
+}
+
+#[test]
+fn test_rerank_candidates_empty_candidates() {
+    use cognimem_server::memory::slm_types::RerankCandidatesInput;
+    let input = RerankCandidatesInput {
+        query: "test".to_string(),
+        candidates: vec![],
+        top_n: 3,
+    };
+    assert!(input.candidates.is_empty());
+}
+
+#[test]
+fn test_resolve_conflict_args_parsing() {
+    use cognimem_server::memory::slm_types::ResolveConflictInput;
+    let json = serde_json::json!({
+        "memory_a_id": "550e8400-e29b-41d4-a716-446655440000",
+        "memory_a_content": "content A",
+        "memory_b_id": "550e8400-e29b-41d4-a716-446655440001",
+        "memory_b_content": "content B"
+    });
+    let input: ResolveConflictInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.memory_a_content, "content A");
+}
+
+#[test]
+fn test_resolve_conflict_different_contents() {
+    use cognimem_server::memory::slm_types::ResolveConflictInput;
+    let input = ResolveConflictInput {
+        memory_a_id: Uuid::new_v4(),
+        memory_a_content: "old".to_string(),
+        memory_b_id: Uuid::new_v4(),
+        memory_b_content: "new".to_string(),
+    };
+    assert_ne!(input.memory_a_content, input.memory_b_content);
 }

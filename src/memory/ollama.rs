@@ -94,7 +94,7 @@ impl OllamaSlm {
         let mut attempt = 0;
         let mut last_error = None;
 
-        while attempt < 3 {
+        while attempt < Self::MAX_RETRIES {
             attempt += 1;
             
             match self.generate(prompt, max_tokens).await {
@@ -104,9 +104,10 @@ impl OllamaSlm {
                         return Ok(cleaned);
                     }
                     
-                    if attempt < 3 {
+                    if attempt < Self::MAX_RETRIES {
                         tracing::warn!("Invalid JSON attempt {}, trying repair prompt", attempt);
                         let repair_prompt = Self::repair_prompt(&cleaned, prompt);
+                        tokio::time::sleep(std::time::Duration::from_millis(Self::RETRY_BACKOFF_MS)).await;
                         match self.generate(&repair_prompt, max_tokens).await {
                             Ok(repair_response) => {
                                 let repaired = Self::extract_json(&repair_response);
@@ -548,13 +549,10 @@ impl SlmEngine for OllamaSlm {
             "Answer from the perspective of a {}.\n\nSituation: {}\nQuestion: {}\n\nProvide reasoning, recommendation, and alternative perspectives.",
             input.perspective_role, input.situation, input.question
         );
-        let response = self.generate_with_retry(&prompt, 250).await?;
-        Ok(SimulatePerspectiveOutput {
-            reasoning: format!("From {} perspective", input.perspective_role),
-            recommendation: "See response above".to_string(),
-            confidence: 0.5,
-            alternative_perspectives: vec!["security expert".to_string(), "end user".to_string()],
-        })
+        let mut output: SimulatePerspectiveOutput =
+            self.parse_json(self.generate_with_retry(&prompt, 250).await).await?;
+        output.confidence = Self::clamp_confidence(output.confidence);
+        Ok(output)
     }
 }
 

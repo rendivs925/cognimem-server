@@ -15,16 +15,15 @@ use cognimem_server::memory::{
     SearchResults, SkillMemory, SlmEngine, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
-    MemoryGraph, apply_decay_to_all, consolidate, detect_conflicts, promote_memories,
-    prune_below_threshold, resolve_conflicts,
+    apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
+    resolve_conflicts,
 };
 use cognimem_server::memory::{
     complete_pattern, detect_and_create_skill, execute_skill as run_skill, extract_persona,
     find_skill, rank_by_timescale, strengthen_co_activated, apply_stdp,
 };
 use cognimem_server::memory::slm_types::{
-    DelegateInput, DelegateOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
-    TeachFromDemonstrationInput, TeachFromDemonstrationOutput,
+    DelegateInput, SimulatePerspectiveInput, TeachFromDemonstrationInput,
 };
 use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
@@ -2076,21 +2075,6 @@ impl CogniMemServer {
         };
 
         Ok(success_json(&output))
-    }
-}
-
-fn expand_with_associations<'a>(
-    direct_ids: &[uuid::Uuid],
-    results: &mut Vec<&'a CognitiveMemoryUnit>,
-    graph: &'a MemoryGraph,
-) {
-    let expanded = graph.spreading_activation(direct_ids, 3, 0.5, 0.1);
-    for (id, _, _) in &expanded {
-        if let Some(mem) = graph.get_memory(id)
-            && !direct_ids.contains(id)
-        {
-            results.push(mem);
-        }
     }
 }
 
