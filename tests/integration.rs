@@ -2047,3 +2047,294 @@ fn test_simulate_perspective_multiple_roles() {
         assert!(json.contains(role), "Output should contain role: {}", role);
     }
 }
+
+#[test]
+fn test_claim_work_json_parsing() {
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "claim_type": "implementation",
+        "hours": 48
+    });
+    assert_eq!(json["memory_id"].as_str().unwrap(), "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(json["claim_type"].as_str().unwrap(), "implementation");
+    assert_eq!(json["hours"].as_i64().unwrap(), 48);
+}
+
+#[test]
+fn test_release_work_json_parsing() {
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+        "complete": true
+    });
+    assert_eq!(json["memory_id"].as_str().unwrap(), "550e8400-e29b-41d4-a716-446655440000");
+    assert!(json["complete"].as_bool().unwrap());
+}
+
+#[test]
+fn test_release_work_json_defaults() {
+    let json = serde_json::json!({
+        "memory_id": "550e8400-e29b-41d4-a716-446655440000"
+    });
+    assert!(!json["complete"].as_bool().unwrap_or(false));
+}
+
+#[test]
+fn test_summarize_turn_args_parsing() {
+    use cognimem_server::memory::slm_types::SummarizeTurnInput;
+    let json = serde_json::json!({
+        "turns": [
+            {
+                "turn_id": "550e8400-e29b-41d4-a716-446655440000",
+                "content": "implemented feature X",
+                "tool_usage": ["grep", "edit"],
+                "decisions": ["use hashmap"]
+            }
+        ]
+    });
+    let args: SummarizeTurnInput = serde_json::from_value(json).unwrap();
+    assert_eq!(args.turns.len(), 1);
+    assert_eq!(args.turns[0].content, "implemented feature X");
+    assert_eq!(args.turns[0].tool_usage.len(), 2);
+    assert_eq!(args.turns[0].decisions[0], "use hashmap");
+}
+
+#[test]
+fn test_summarize_turn_empty_turns() {
+    use cognimem_server::memory::slm_types::SummarizeTurnInput;
+    let json = serde_json::json!({ "turns": [] });
+    let args: SummarizeTurnInput = serde_json::from_value(json).unwrap();
+    assert!(args.turns.is_empty());
+}
+
+#[test]
+fn test_summarize_session_args_parsing() {
+    use cognimem_server::memory::slm_types::{SummarizeSessionInput, TaskSummary};
+    let json = serde_json::json!({
+        "turns": [
+            {
+                "content": "working on the API",
+                "turn_id": "550e8400-e29b-41d4-a716-446655440001",
+                "tool_usage": ["grep", "edit"],
+                "decisions": ["use async"]
+            }
+        ],
+        "completed_tasks": [
+            {
+                "task_id": "550e8400-e29b-41d4-a716-446655440002",
+                "title": "fix login bug",
+                "status": "completed"
+            }
+        ],
+        "open_tasks": [
+            {
+                "title": "add tests",
+                "status": "in_progress"
+            }
+        ]
+    });
+    let args: SummarizeSessionInput = serde_json::from_value(json).unwrap();
+    assert_eq!(args.turns.len(), 1);
+    assert_eq!(args.turns[0].tool_usage.len(), 2);
+    assert_eq!(args.completed_tasks.len(), 1);
+    assert_eq!(args.completed_tasks[0].title, "fix login bug");
+    assert_eq!(args.open_tasks.len(), 1);
+    assert_eq!(args.open_tasks[0].status, "in_progress");
+}
+
+#[test]
+fn test_extract_best_practice_full_input() {
+    use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
+    let json = serde_json::json!({
+        "content": "use DRY principle - extract common patterns",
+        "context": "in the auth module"
+    });
+    let args: ExtractBestPracticeInput = serde_json::from_value(json).unwrap();
+    assert!(args.content.contains("DRY"));
+    assert_eq!(args.context, Some("in the auth module".to_string()));
+}
+
+#[test]
+fn test_extract_best_practice_no_context() {
+    use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
+    let json = serde_json::json!({
+        "content": "apply KISS - keep it simple"
+    });
+    let args: ExtractBestPracticeInput = serde_json::from_value(json).unwrap();
+    assert!(args.content.contains("KISS"));
+    assert!(args.context.is_none());
+}
+
+#[test]
+fn test_reflect_args_light() {
+    use cognimem_server::memory::types::ReflectArgs;
+    let json = serde_json::json!({ "intensity": "light" });
+    let args: ReflectArgs = serde_json::from_value(json).unwrap();
+    assert_eq!(args.intensity.as_deref(), Some("light"));
+}
+
+#[test]
+fn test_reflect_args_full() {
+    use cognimem_server::memory::types::ReflectArgs;
+    let json = serde_json::json!({
+        "intensity": "full",
+        "conflict_strategy": "keep_both"
+    });
+    let args: ReflectArgs = serde_json::from_value(json).unwrap();
+    assert_eq!(args.intensity.as_deref(), Some("full"));
+    assert_eq!(args.conflict_strategy.as_deref(), Some("keep_both"));
+}
+
+#[test]
+fn test_reflect_args_defaults() {
+    use cognimem_server::memory::types::ReflectArgs;
+    let json = serde_json::json!({});
+    let args: ReflectArgs = serde_json::from_value(json).unwrap();
+    assert!(args.intensity.is_none());
+    assert!(args.conflict_strategy.is_none());
+}
+
+#[test]
+fn test_reflect_result_structure() {
+    use cognimem_server::memory::types::{Conflict, ReflectResult};
+    let conflict = Conflict {
+        memory_id_1: Uuid::new_v4(),
+        memory_id_2: Uuid::new_v4(),
+        similarity: 0.85,
+        tier: MemoryTier::Episodic,
+    };
+    let result = ReflectResult::new(5, 2, 10, vec![conflict]);
+    assert_eq!(result.pruned_count, 5);
+    assert_eq!(result.promoted_count, 2);
+    assert_eq!(result.decayed_count, 10);
+    assert_eq!(result.conflicts.len(), 1);
+}
+
+#[test]
+fn test_in_memory_store_delete() {
+    use cognimem_server::memory::InMemoryStore;
+    let store = InMemoryStore::new();
+    let memory = make_memory("test content", MemoryTier::Episodic);
+    store.save(&memory).unwrap();
+
+    let loaded = store.load_all().unwrap();
+    assert_eq!(loaded.len(), 1);
+
+    store.delete(&memory.id).unwrap();
+
+    let loaded_after = store.load_all().unwrap();
+    assert_eq!(loaded_after.len(), 0);
+}
+
+#[test]
+fn test_in_memory_store_overwrite() {
+    use cognimem_server::memory::InMemoryStore;
+    let store = InMemoryStore::new();
+    let mut memory = make_memory("original", MemoryTier::Semantic);
+    let id = memory.id;
+    store.save(&memory).unwrap();
+
+    memory.metadata.base_activation = 0.2;
+    store.save(&memory).unwrap();
+
+    let loaded = store.load_all().unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].metadata.base_activation, 0.2);
+}
+
+#[test]
+fn test_in_memory_store_multiple_memories() {
+    use cognimem_server::memory::InMemoryStore;
+    let store = InMemoryStore::new();
+
+    for i in 0..10 {
+        let mem = make_memory(&format!("memory {}", i), MemoryTier::Episodic);
+        store.save(&mem).unwrap();
+    }
+
+    let loaded = store.load_all().unwrap();
+    assert_eq!(loaded.len(), 10);
+}
+
+#[test]
+fn test_conflict_detection_threshold() {
+    use cognimem_server::memory::types::Conflict;
+    let conflict = Conflict {
+        memory_id_1: Uuid::new_v4(),
+        memory_id_2: Uuid::new_v4(),
+        similarity: 0.76,
+        tier: MemoryTier::Semantic,
+    };
+    assert!(conflict.similarity > 0.75);
+    assert!(conflict.similarity < 0.98);
+}
+
+#[test]
+fn test_associate_result_success() {
+    use cognimem_server::memory::types::AssociateResult;
+    let id1 = Uuid::new_v4();
+    let id2 = Uuid::new_v4();
+    let result = AssociateResult::success(id1, id2, 0.7);
+    assert_eq!(result.from, id1);
+    assert_eq!(result.to, id2);
+    assert_eq!(result.strength, 0.7);
+    assert!(result.message.contains("successfully"));
+}
+
+#[test]
+fn test_forget_result_hard_delete() {
+    use cognimem_server::memory::types::ForgetResult;
+    let id = Uuid::new_v4();
+    let result = ForgetResult::hard_deleted(id);
+    assert_eq!(result.memory_id, id);
+    assert!(result.deleted);
+}
+
+#[test]
+fn test_forget_result_soft_delete() {
+    use cognimem_server::memory::types::ForgetResult;
+    let id = Uuid::new_v4();
+    let result = ForgetResult::soft_deleted(id);
+    assert_eq!(result.memory_id, id);
+    assert!(!result.deleted);
+}
+
+#[test]
+fn test_work_claim_not_expired() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let session = Uuid::new_v4();
+    let memory_id = Uuid::new_v4();
+    let claim = WorkClaim::new(memory_id, session, ClaimType::Implementation, 1);
+    assert!(!claim.is_expired(), "One hour lease should not be expired");
+}
+
+#[test]
+fn test_work_claim_complete_transitions() {
+    use cognimem_server::memory::types::{ClaimStatus, ClaimType, WorkClaim};
+    let session = Uuid::new_v4();
+    let memory_id = Uuid::new_v4();
+    let mut claim = WorkClaim::new(memory_id, session, ClaimType::Testing, 24);
+    assert_eq!(claim.status, ClaimStatus::Active);
+    claim.complete();
+    assert_eq!(claim.status, ClaimStatus::Completed);
+}
+
+#[test]
+fn test_search_result_structure() {
+    use cognimem_server::memory::types::SearchResult;
+    let id = Uuid::new_v4();
+    let result = SearchResult {
+        id,
+        snippet: "test snippet content...".to_string(),
+        tier: MemoryTier::Semantic,
+        activation: 0.75,
+    };
+    assert_eq!(result.tier, MemoryTier::Semantic);
+    assert!(result.snippet.len() > 0);
+}
+
+#[test]
+fn test_search_results_empty() {
+    use cognimem_server::memory::types::SearchResults;
+    let results = SearchResults::new(vec![]);
+    assert!(results.results.is_empty());
+}
