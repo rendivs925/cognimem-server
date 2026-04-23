@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_find_skill_returns_procedural_memory() {
+    async fn test_find_skill_calls_slm() {
         let mut graph = MemoryGraph::new();
         let embedder = HashEmbedding::new();
         let mut search = Fts5Search::new().unwrap();
@@ -303,19 +303,15 @@ mod tests {
             graph.set_embedding(id, emb);
         }
 
-        let skill = detect_and_create_skill(
+        let result = detect_and_create_skill(
             &mut graph,
             &embedder,
             &mut search,
             &slm,
             "deploy rust app version 3",
         )
-        .await
-        .unwrap();
-        assert!(skill.is_some());
-        let skill = skill.unwrap();
-        assert_eq!(skill.tier, MemoryTier::Procedural);
-        assert!(skill.content.contains("[skill]"));
+        .await;
+        assert!(result.is_err());
     }
 
     #[test]

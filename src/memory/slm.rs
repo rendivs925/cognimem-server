@@ -90,6 +90,8 @@ pub trait SlmEngine: Send + Sync {
 
 pub struct NoOpSlm;
 
+const NOOP_ERROR: &str = "NoOpSlm requires a configured LLM provider (Ollama)";
+
 #[async_trait]
 impl SlmEngine for NoOpSlm {
     fn model_name(&self) -> &str {
@@ -98,338 +100,268 @@ impl SlmEngine for NoOpSlm {
 
     async fn compress_memory(
         &self,
-        input: CompressMemoryInput,
+        _input: CompressMemoryInput,
     ) -> Result<CompressMemoryOutput, SlmError> {
-        Ok(CompressMemoryOutput {
-            summary: input
-                .content
-                .split_whitespace()
-                .take(20)
-                .collect::<Vec<_>>()
-                .join(" "),
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.3,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn classify_memory(
         &self,
         _input: ClassifyMemoryInput,
     ) -> Result<ClassifyMemoryOutput, SlmError> {
-        Ok(ClassifyMemoryOutput {
-            tier: MemoryTier::Episodic,
-            importance: 0.5,
-            suppress: false,
-            tags: Vec::new(),
-            associations: Vec::new(),
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.2,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn rerank_candidates(
         &self,
-        input: RerankCandidatesInput,
+        _input: RerankCandidatesInput,
     ) -> Result<RerankCandidatesOutput, SlmError> {
-        let mut candidates = input.candidates;
-        candidates.sort_by(|a, b| {
-            b.initial_score
-                .partial_cmp(&a.initial_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(RerankCandidatesOutput {
-            ranked_ids: candidates
-                .into_iter()
-                .take(input.top_n)
-                .map(|c| c.id)
-                .collect(),
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.25,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn resolve_conflict(
         &self,
         _input: ResolveConflictInput,
     ) -> Result<ResolveConflictOutput, SlmError> {
-        Ok(ResolveConflictOutput {
-            kind: ConflictKind::Unrelated,
-            action: ConflictResolution::LatestWins,
-            merged_summary: None,
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.1,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn extract_persona(
         &self,
         _input: ExtractPersonaInput,
     ) -> Result<ExtractPersonaOutput, SlmError> {
-        Ok(ExtractPersonaOutput {
-            profiles: Vec::new(),
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.1,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
-    async fn distill_skill(
-        &self,
-        input: DistillSkillInput,
-    ) -> Result<DistillSkillOutput, SlmError> {
-        let pattern = input.examples.first().cloned().unwrap_or_default();
-        Ok(DistillSkillOutput {
-            name: pattern
-                .split_whitespace()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("_")
-                .to_lowercase(),
-            pattern,
-            steps: input.examples,
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.2,
-            },
-        })
+    async fn distill_skill(&self, input: DistillSkillInput) -> Result<DistillSkillOutput, SlmError> {
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn complete_pattern(
         &self,
-        input: CompletePatternInput,
+        _input: CompletePatternInput,
     ) -> Result<CompletePatternOutput, SlmError> {
-        Ok(CompletePatternOutput {
-            completed_text: input.cue,
-            evidence: input.context.into_iter().take(3).collect(),
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.2,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn summarize_turn(
         &self,
-        input: SummarizeTurnInput,
+        _input: SummarizeTurnInput,
     ) -> Result<SummarizeTurnOutput, SlmError> {
-        let summary = input
-            .turns
-            .first()
-            .map(|t| t.content.chars().take(200).collect())
-            .unwrap_or_default();
-        Ok(SummarizeTurnOutput {
-            summary,
-            key_decisions: Vec::new(),
-            key_actions: Vec::new(),
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.2,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn summarize_session(
         &self,
-        input: SummarizeSessionInput,
+        _input: SummarizeSessionInput,
     ) -> Result<SummarizeSessionOutput, SlmError> {
-        let summary = input
-            .turns
-            .first()
-            .map(|t| t.content.chars().take(200).collect())
-            .unwrap_or_default();
-        Ok(SummarizeSessionOutput {
-            summary,
-            completed: input
-                .completed_tasks
-                .iter()
-                .map(|t| t.title.clone())
-                .collect(),
-            unresolved: input.open_tasks.iter().map(|t| t.title.clone()).collect(),
-            next_steps: Vec::new(),
-            handoff_context: None,
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.2,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn extract_best_practice(
         &self,
-        input: ExtractBestPracticeInput,
+        _input: ExtractBestPracticeInput,
     ) -> Result<ExtractBestPracticeOutput, SlmError> {
-        let content_lower = input.content.to_lowercase();
-        let mut practices = Vec::new();
-
-        let keywords = [
-            ("DRY", "Don't Repeat Yourself - extract common patterns"),
-            ("KISS", "Keep It Simple - prefer simple over clever"),
-            (
-                "YAGNI",
-                "You Aren't Gonna Need It - don't add features until needed",
-            ),
-            (
-                "SOLID",
-                "Single responsibility, Open-closed, Liskov substitution, Interface segregation, Dependency inversion",
-            ),
-            (
-                "guard clause",
-                "Reject invalid inputs early at function entrance",
-            ),
-        ];
-
-        for (keyword, principle) in keywords {
-            if content_lower.contains(&keyword.to_lowercase()) {
-                practices.push(super::slm_types::BestPractice {
-                    principle: keyword.to_string(),
-                    description: principle.to_string(),
-                    applies_to: vec!["current context".to_string()],
-                    example: None,
-                });
-            }
-        }
-
-        let should_persist = !practices.is_empty();
-        Ok(ExtractBestPracticeOutput {
-            practices,
-            confidence: 0.3,
-            should_persist,
-            metadata: SlmMetadata {
-                model: self.model_name().to_string(),
-                confidence: 0.3,
-            },
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn delegate_to_llm(
         &self,
-        input: DelegateInput,
+        _input: DelegateInput,
     ) -> Result<DelegateOutput, SlmError> {
-        let confidence = if input.confidence_threshold <= 0.5 { 0.5 } else { input.confidence_threshold };
-        Ok(DelegateOutput {
-            response: format!("Delegate: {}", input.query),
-            delegated: true,
-            confidence: 0.7,
-            model_used: self.model_name().to_string(),
-            reasoning: Some("Confidence below threshold, delegating to larger model".to_string()),
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn teach_from_demonstration(
         &self,
-        input: TeachFromDemonstrationInput,
+        _input: TeachFromDemonstrationInput,
     ) -> Result<TeachFromDemonstrationOutput, SlmError> {
-        Ok(TeachFromDemonstrationOutput {
-            episodic_memory_id: uuid::Uuid::new_v4(),
-            skill_pending: false,
-            promotion_candidates: Vec::new(),
-            confidence: 0.6,
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 
     async fn simulate_perspective(
         &self,
-        input: SimulatePerspectiveInput,
+        _input: SimulatePerspectiveInput,
     ) -> Result<SimulatePerspectiveOutput, SlmError> {
-        Ok(SimulatePerspectiveOutput {
-            reasoning: format!("From {} perspective: analyzing situation", input.perspective_role),
-            recommendation: "Consider security implications first".to_string(),
-            confidence: 0.4,
-            alternative_perspectives: vec!["security expert".to_string(), "end user".to_string()],
-        })
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::slm_types::RerankCandidateInput;
 
     #[tokio::test]
-    async fn test_noop_compress_truncates() {
+    async fn test_noop_compress_returns_error() {
         let slm = NoOpSlm;
-        let long = "this is a very long sentence that should be compressed down to just the first twenty words because the no op implementation simply truncates";
-        let compressed = slm
+        let result = slm
             .compress_memory(CompressMemoryInput {
-                content: long.to_string(),
+                content: "test content".into(),
                 tier_hint: None,
             })
-            .await
-            .unwrap();
-        assert!(compressed.summary.split_whitespace().count() <= 20);
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_noop_rerank_sorts_by_score() {
+    async fn test_noop_classify_returns_error() {
         let slm = NoOpSlm;
-        let candidates = vec![
-            RerankCandidateInput {
-                id: uuid::Uuid::new_v4(),
-                content: "low".into(),
-                initial_score: 0.2,
-            },
-            RerankCandidateInput {
-                id: uuid::Uuid::new_v4(),
-                content: "high".into(),
-                initial_score: 0.9,
-            },
-            RerankCandidateInput {
-                id: uuid::Uuid::new_v4(),
-                content: "mid".into(),
-                initial_score: 0.5,
-            },
-        ];
+        let result = slm
+            .classify_memory(ClassifyMemoryInput {
+                content: "test".into(),
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_rerank_returns_error() {
+        let slm = NoOpSlm;
         let result = slm
             .rerank_candidates(RerankCandidatesInput {
                 query: "test".into(),
-                candidates: candidates.clone(),
+                candidates: vec![],
                 top_n: 3,
             })
-            .await
-            .unwrap();
-        assert_eq!(result.ranked_ids[0], candidates[1].id);
-        assert_eq!(result.ranked_ids[1], candidates[2].id);
-        assert_eq!(result.ranked_ids[2], candidates[0].id);
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_noop_resolve_conflict_returns_latest() {
+    async fn test_noop_resolve_conflict_returns_error() {
         let slm = NoOpSlm;
-        assert_eq!(
-            slm.resolve_conflict(ResolveConflictInput {
+        let result = slm
+            .resolve_conflict(ResolveConflictInput {
                 memory_a_id: uuid::Uuid::new_v4(),
                 memory_a_content: "a".into(),
                 memory_b_id: uuid::Uuid::new_v4(),
                 memory_b_content: "b".into(),
             })
-            .await
-            .unwrap()
-            .action,
-            ConflictResolution::LatestWins
-        );
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_noop_complete_pattern_returns_input() {
+    async fn test_noop_extract_persona_returns_error() {
         let slm = NoOpSlm;
-        assert_eq!(
-            slm.complete_pattern(CompletePatternInput {
-                cue: "partial cue".into(),
-                context: Vec::new(),
+        let result = slm
+            .extract_persona(ExtractPersonaInput { memories: vec![] })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_distill_skill_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .distill_skill(DistillSkillInput {
+                examples: vec!["test".into()],
             })
-            .await
-            .unwrap()
-            .completed_text,
-            "partial cue"
-        );
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_complete_pattern_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .complete_pattern(CompletePatternInput {
+                cue: "partial cue".into(),
+                context: vec![],
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_summarize_turn_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .summarize_turn(SummarizeTurnInput { turns: vec![] })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_summarize_session_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .summarize_session(SummarizeSessionInput {
+                turns: vec![],
+                completed_tasks: vec![],
+                open_tasks: vec![],
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_extract_best_practice_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .extract_best_practice(ExtractBestPracticeInput {
+                content: "test".into(),
+                context: None,
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_delegate_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .delegate_to_llm(DelegateInput {
+                query: "test".into(),
+                context: vec![],
+                confidence_threshold: 0.7,
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_teach_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .teach_from_demonstration(TeachFromDemonstrationInput {
+                demonstration: "test".into(),
+                pattern_extracted: "pattern".to_string(),
+                domain: None,
+                source_type: Some("code_review".to_string()),
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_noop_simulate_returns_error() {
+        let slm = NoOpSlm;
+        let result = slm
+            .simulate_perspective(SimulatePerspectiveInput {
+                perspective_role: "security_expert".to_string(),
+                question: "?".to_string(),
+                situation: "test".to_string(),
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_slm_error_display() {
+        let err = SlmError::RequestFailed("test error".to_string());
+        assert_eq!(err.to_string(), "request failed: test error");
+    }
+
+    #[test]
+    fn test_slm_error_validation() {
+        let err = SlmError::ValidationFailed("invalid".to_string());
+        assert_eq!(err.to_string(), "validation failed: invalid");
+    }
+
+    #[test]
+    fn test_slm_error_invalid_response() {
+        let err = SlmError::InvalidResponse("bad response".to_string());
+        assert_eq!(err.to_string(), "invalid response: bad response");
     }
 }

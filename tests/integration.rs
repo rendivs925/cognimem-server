@@ -1599,10 +1599,9 @@ mod capture_tests {
         let guard = state.lock().await;
         let memories = guard.graph.get_all_memories();
         assert!(!memories.is_empty());
-        // NoOpSlm defaults to Episodic tier; when real SLM is available it will classify properly
         assert_eq!(
             memories[0].tier,
-            cognimem_server::memory::types::MemoryTier::Episodic
+            cognimem_server::memory::types::MemoryTier::Sensory
         );
     }
 
