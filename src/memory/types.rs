@@ -226,9 +226,18 @@ pub struct MemoryMetadata {
     /// Higher salience = slower decay (more memorable). Range [0.5, 2.0].
     #[serde(default = "default_salience")]
     pub salience: f32,
+    /// Memory strength for adaptive forgetting (Ebbinghaus curve).
+    /// Higher strength = slower decay. Updated on recall; decays over time.
+    /// Range [0.1, 10.0]. Default 1.0.
+    #[serde(default = "default_strength")]
+    pub strength: f32,
 }
 
 fn default_salience() -> f32 {
+    1.0
+}
+
+fn default_strength() -> f32 {
     1.0
 }
 
@@ -254,39 +263,61 @@ impl MemoryMetadata {
             decay_rate,
             rehearsal_history: vec![now],
             salience: 1.0,
+            strength: 1.0,
         }
     }
 
     /// Recomputes `base_activation` based on elapsed time since last access.
     ///
-    /// Uses an ACT-R style base-level activation model:
-    /// `B = salience * ln(sum((t_now - t_i + 1)^-d))`, with a floor of 0.01.
+    /// Combines ACT-R base-level activation with FadeMem Ebbinghaus curve:
+    /// `B = salience * ln(sum((t_now - t_i + 1)^-(d/s)))`, with a floor of 0.01.
     ///
-    /// The salience factor modulates decay - higher salience = slower decay = more durable memory.
+    /// The effective decay rate is `decay_rate / strength`, so higher strength = slower decay.
+    /// The salience factor further modulates decay - higher salience = slower decay.
     pub fn update_activation(&mut self, now: i64) {
         if self.rehearsal_history.is_empty() {
             self.rehearsal_history
                 .push(self.last_accessed.max(self.created_at));
         }
-        let decay = self.decay_rate as f64;
+        let effective_decay = (self.decay_rate / self.strength.max(0.1)) as f64;
         let salience = self.salience as f64;
         let summed: f64 = self
             .rehearsal_history
             .iter()
             .map(|&timestamp| {
                 let elapsed = (now - timestamp).max(0) as f64 + 1.0;
-                elapsed.powf(-decay)
+                elapsed.powf(-effective_decay)
             })
             .sum();
         let new_activation = salience * summed.ln();
         self.base_activation = new_activation.max(0.01) as f32;
     }
 
+    /// Records a rehearsal (recall) event.
+    ///
+    /// Strengthens the memory: access count +1, rehearsal history updated,
+    /// and memory strength increases (capped at 10.0). This makes the memory
+    /// decay more slowly via the Ebbinghaus curve.
     pub fn record_rehearsal(&mut self, now: i64) {
         self.last_accessed = now;
         self.access_count = self.access_count.saturating_add(1);
         self.rehearsal_history.push(now);
+        self.strength = (self.strength * 1.1).min(10.0);
         self.update_activation(now);
+    }
+
+    /// Applies gradual strength decay (FadeMem).
+    ///
+    /// Over time, unused memories lose strength. Strength decays towards a minimum
+    /// of 0.1. The decay is proportional to the elapsed time and the current strength
+    /// (stronger memories decay faster in absolute terms, but the relative effect
+    /// is smaller).
+    pub fn apply_strength_decay(&mut self, now: i64) {
+        let elapsed_hours = (now - self.last_accessed).max(0) as f64 / 3600.0;
+        if elapsed_hours > 1.0 {
+            let decay_factor = (-0.05 * elapsed_hours).exp() as f32;
+            self.strength = (self.strength * decay_factor).max(0.1);
+        }
     }
 }
 

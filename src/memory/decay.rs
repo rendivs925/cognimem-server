@@ -2,16 +2,17 @@ use super::graph::MemoryGraph;
 use super::types::MemoryTier;
 use chrono::Utc;
 
-/// Applies activation decay to all memories in the graph based on elapsed time.
+/// Applies activation decay and FadeMem strength decay to all memories.
 ///
-/// Each memory's `base_activation` is recomputed using its decay rate and
-/// the time since it was last accessed.
+/// Each memory's `base_activation` is recomputed using the strength-modulated
+/// Ebbinghaus curve. Memory strength also decays gradually for unused memories.
 pub fn apply_decay_to_all(graph: &mut MemoryGraph) {
     let now = Utc::now().timestamp();
     let ids: Vec<uuid::Uuid> = graph.get_all_memories().iter().map(|m| m.id).collect();
 
     for id in ids {
         if let Some(mem) = graph.get_memory_mut(&id) {
+            mem.metadata.apply_strength_decay(now);
             mem.metadata.update_activation(now);
         }
     }

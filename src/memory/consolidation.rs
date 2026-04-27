@@ -35,13 +35,15 @@ fn replay_recent(graph: &mut MemoryGraph) {
         if let Some(mem) = graph.get_memory_mut(id) {
             mem.metadata.record_rehearsal(now);
             mem.metadata.base_activation = (mem.metadata.base_activation + REPLAY_BOOST).min(1.0);
+            mem.metadata.strength = (mem.metadata.strength + 0.05).min(10.0);
         }
 
         let associated: Vec<(uuid::Uuid, f32)> = graph.get_associations(id);
-        for (assoc_id, strength) in &associated {
-            let boost = ASSOCIATED_BOOST * strength;
+        for (assoc_id, assoc_strength) in &associated {
+            let boost = ASSOCIATED_BOOST * assoc_strength;
             if let Some(mem) = graph.get_memory_mut(assoc_id) {
                 mem.metadata.base_activation = (mem.metadata.base_activation + boost).min(1.0);
+                mem.metadata.strength = (mem.metadata.strength + 0.02).min(10.0);
             }
         }
     }
