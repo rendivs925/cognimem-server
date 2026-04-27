@@ -398,6 +398,25 @@ impl CognitiveMemoryUnit {
 
 /// Arguments for the `remember` operation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InjectMemoryArgs {
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HandoffSummaryArgs {
+    pub from_session: Uuid,
+    #[serde(default)]
+    pub project_path: Option<String>,
+    pub summary: String,
+    #[serde(default)]
+    pub unresolved: Option<Vec<String>>,
+    #[serde(default)]
+    pub next_steps: Option<Vec<String>>,
+    #[serde(default)]
+    pub relevant_memories: Option<Vec<Uuid>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RememberArgs {
     /// The content to store as a memory.
     pub content: String,

@@ -9,9 +9,9 @@ use cognimem_server::memory::{
     ClassifyMemoryInput, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternInput,
     CompletePatternResult, CompressMemoryInput, EmotionState, ExecuteSkillArgs, ExecuteSkillResult,
     ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
-    GetObservationsArgs, InMemoryStore, ListMemoriesArgs, ListMemoriesResult, MemoryScope,
-    MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
-    ReflectArgs, ReflectResult, RememberArgs, RememberResult, RerankCandidateInput,
+    GetObservationsArgs, HandoffSummaryArgs, InMemoryStore, InjectMemoryArgs, ListMemoriesArgs,
+    ListMemoriesResult, MemoryScope, MemoryStore, MemorySummary, MemoryTier, ObservationsResult,
+    RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RerankCandidateInput,
     RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs,
     SearchResult, SearchResults, SkillMemory, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
@@ -2080,15 +2080,13 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("query is required"))?
-            .to_string();
+        let args: InjectMemoryArgs = parse_args(args)?;
 
-        if query.trim().is_empty() {
+        if args.query.trim().is_empty() {
             return Err(invalid_params("query must not be empty"));
         }
+
+        let query = args.query;
 
         let mut guard = self.state.lock().await;
 
@@ -2163,68 +2161,20 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let from_session = uuid::Uuid::parse_str(
-            args.get("from_session")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("from_session is required"))?,
-        )
-        .map_err(|_| invalid_params("Invalid from_session UUID"))?;
+        let args: HandoffSummaryArgs = parse_args(args)?;
 
-        let summary = args
-            .get("summary")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("summary is required"))?
-            .to_string();
-
-        if summary.trim().is_empty() {
+        if args.summary.trim().is_empty() {
             return Err(invalid_params("summary must not be empty"));
         }
 
-        let project_path = args
-            .get("project_path")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-
-        let unresolved: Vec<String> = args
-            .get("unresolved")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let next_steps: Vec<String> = args
-            .get("next_steps")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let relevant_memories: Vec<uuid::Uuid> = args
-            .get("relevant_memories")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter_map(|s| uuid::Uuid::parse_str(s).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let handoff =
-            cognimem_server::memory::HandoffSummary::new(
-                from_session,
-                project_path,
-                summary,
-                unresolved,
-                next_steps,
-                relevant_memories,
-            );
+        let handoff = cognimem_server::memory::HandoffSummary::new(
+            args.from_session,
+            args.project_path,
+            args.summary,
+            args.unresolved.unwrap_or_default(),
+            args.next_steps.unwrap_or_default(),
+            args.relevant_memories.unwrap_or_default(),
+        );
 
         let handoff_id = handoff.from_session;
         let mut guard = self.state.lock().await;
