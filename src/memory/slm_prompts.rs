@@ -1,7 +1,7 @@
 use super::slm_types::{
     ClassifyMemoryInput, CompletePatternInput, CompressMemoryInput, DistillSkillInput,
     ExtractBestPracticeInput, ExtractPersonaInput, RerankCandidatesInput, ResolveConflictInput,
-    SummarizeSessionInput, SummarizeTurnInput,
+    ScoreRelevanceInput, SummarizeSessionInput, SummarizeTurnInput, TagEmotionInput,
 };
 
 const JSON_FUNCTION_HEADER: &str = r#"You are a JSON function.
@@ -124,5 +124,19 @@ pub fn extract_best_practice_prompt(input: &ExtractBestPracticeInput) -> String 
     format!(
         "{} {{\"practices\":[{{\"principle\":\"DRY|KISS|SOLID|YAGNI|GuardClauses|DesignPatterns\",\"description\":\"string\",\"applies_to\":[\"string\"],\"example\":null}}],\"confidence\":0.0,\"should_persist\":false,\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Content: {}. Context: {}",
         JSON_FUNCTION_HEADER, OUTPUT_RULES, input.content, input.context.as_deref().unwrap_or("none")
+    )
+}
+
+pub fn score_relevance_prompt(input: &ScoreRelevanceInput) -> String {
+    format!(
+        "{} {{\"relevance\":0.0,\"reasoning\":null,\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Score relevance 0-1 of candidate to query. Query: {}. Candidate: {}",
+        JSON_FUNCTION_HEADER, OUTPUT_RULES, input.query, input.candidate_content
+    )
+}
+
+pub fn tag_emotion_prompt(input: &TagEmotionInput) -> String {
+    format!(
+        "{} {{\"valence\":0.0,\"arousal\":0.0,\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Analyze the emotional tone. valence: -1.0 to 1.0 (negative to positive). arousal: 0.0 to 1.0 (calm to excited). Content: {}",
+        JSON_FUNCTION_HEADER, OUTPUT_RULES, input.content
     )
 }

@@ -3,6 +3,7 @@ pub mod consolidation;
 pub mod decay;
 pub mod graph;
 pub mod in_memory;
+pub mod injection;
 pub mod ollama;
 pub mod pattern;
 pub mod persona;
@@ -21,6 +22,7 @@ pub use consolidation::{consolidate, detect_conflicts, resolve_conflicts};
 pub use decay::{apply_decay_to_all, promote_memories, prune_below_threshold};
 pub use graph::MemoryGraph;
 pub use in_memory::InMemoryStore;
+pub use injection::InjectionDecider;
 pub use ollama::OllamaSlm;
 pub use pattern::{
     CompletePatternArgs, CompletePatternResult, complete_pattern, strengthen_co_activated,

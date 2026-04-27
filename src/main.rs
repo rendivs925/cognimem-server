@@ -3,16 +3,17 @@ mod config;
 use clap::Parser;
 use cognimem_server::capture::{CapturePipeline, start_capture_server};
 use cognimem_server::embeddings::fuse_scores;
+use cognimem_server::broker::BrokerEvent;
 use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus, ClaimType,
     ClassifyMemoryInput, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternInput,
-    CompletePatternResult, CompressMemoryInput, ExecuteSkillArgs, ExecuteSkillResult,
+    CompletePatternResult, CompressMemoryInput, EmotionState, ExecuteSkillArgs, ExecuteSkillResult,
     ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
     GetObservationsArgs, InMemoryStore, ListMemoriesArgs, ListMemoriesResult, MemoryScope,
     MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
     ReflectArgs, ReflectResult, RememberArgs, RememberResult, RerankCandidateInput,
-    RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs, SearchResult,
-    SearchResults, SkillMemory, SlmError, TimelineArgs, TimelineResult, WorkClaim,
+    RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs,
+    SearchResult, SearchResults, SkillMemory, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
@@ -593,6 +594,37 @@ impl ServerHandler for CogniMemServer {
                     "required": ["perspective_role", "situation", "question"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("inject_memory"),
+                Cow::Borrowed(
+                    "Find and inject a highly relevant memory into the current context",
+                ),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "The current user prompt or context to match against" }
+                    },
+                    "required": ["query"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("handoff_summary"),
+                Cow::Borrowed(
+                    "Store a structured handoff summary when transferring context between sessions",
+                ),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "from_session": { "type": "string", "format": "uuid", "description": "Session ID handing off" },
+                        "project_path": { "type": "string", "description": "Project path for the handoff" },
+                        "summary": { "type": "string", "description": "Summary of work done and context" },
+                        "unresolved": { "type": "array", "items": { "type": "string" }, "description": "List of unresolved issues" },
+                        "next_steps": { "type": "array", "items": { "type": "string" }, "description": "Suggested next steps" },
+                        "relevant_memories": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Relevant memory IDs to carry forward" }
+                    },
+                    "required": ["from_session", "summary"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -641,6 +673,8 @@ impl ServerHandler for CogniMemServer {
             "delegate_to_llm" => self.handle_delegate_to_llm(args).await,
             "teach_from_demonstration" => self.handle_teach_from_demonstration(args).await,
             "simulate_perspective" => self.handle_simulate_perspective(args).await,
+            "inject_memory" => self.handle_inject_memory(args).await,
+            "handoff_summary" => self.handle_handoff_summary(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -805,6 +839,23 @@ impl CogniMemServer {
             memory.model.confidence = Some(0.2);
         }
 
+        let tag_emotion_result = {
+            let guard = self.state.lock().await;
+            guard
+                .slm
+                .tag_emotion(cognimem_server::memory::slm_types::TagEmotionInput {
+                    content: memory.content.clone(),
+                })
+                .await
+                .ok()
+        };
+        if let Some(emotion) = tag_emotion_result {
+            memory.emotion = Some(EmotionState {
+                valence: emotion.valence,
+                arousal: emotion.arousal,
+            });
+        }
+
         let memory_id = memory.id;
         let mut guard = self.state.lock().await;
 
@@ -862,6 +913,8 @@ impl CogniMemServer {
                 session_context: _,
                 handoffs: _,
                 project_models: _,
+                injection: _,
+                broker: _,
             } = &mut *guard;
             if let Some(skill_memory) = detect_and_create_skill(
                 graph,
@@ -1181,6 +1234,8 @@ impl CogniMemServer {
             session_context: _,
             handoffs: _,
             project_models: _,
+            injection: _,
+            broker: _,
         } = &mut *guard;
         let total = graph.len();
 
@@ -2021,6 +2076,172 @@ impl CogniMemServer {
         Ok(success_json(&output))
     }
 
+    async fn handle_inject_memory(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("query is required"))?
+            .to_string();
+
+        if query.trim().is_empty() {
+            return Err(invalid_params("query must not be empty"));
+        }
+
+        let mut guard = self.state.lock().await;
+
+        if guard.injection.injected_count() >= 1 {
+            return Ok(success_json(&serde_json::json!({
+                "injected": false,
+                "reason": "max one injection per session already used",
+                "memory": null
+            })));
+        }
+
+        if guard.injection.has_recent_query(&query) {
+            return Ok(success_json(&serde_json::json!({
+                "injected": false,
+                "reason": "duplicate query, already checked",
+                "memory": null
+            })));
+        }
+
+        let candidates = guard.injection.gather_candidates(&guard.graph);
+        if candidates.is_empty() {
+            guard.injection.record_query(query);
+            return Ok(success_json(&serde_json::json!({
+                "injected": false,
+                "reason": "no candidates available",
+                "memory": null
+            })));
+        }
+
+        let best = guard
+            .injection
+            .find_best_candidate(&query, &candidates, guard.slm.as_ref())
+            .await
+            .map_err(|e| slm_failed("inject_memory", guard.slm.model_name(), e))?;
+
+        match best {
+            Some(memory) => {
+                let memory_id = memory.id;
+                guard.injection.record_injection(memory_id);
+                guard.injection.record_query(query);
+
+                guard.broker.publish_event(&BrokerEvent::MemoryUpdated {
+                    memory_id,
+                    action: "injected".to_string(),
+                    agent_id: "cognimem".to_string(),
+                });
+
+                Ok(success_json(&serde_json::json!({
+                    "injected": true,
+                    "reason": null,
+                    "memory": {
+                        "id": memory.id,
+                        "content": memory.content,
+                        "tier": memory.tier.to_string(),
+                        "importance": memory.metadata.importance,
+                        "activation": memory.metadata.base_activation
+                    }
+                })))
+            }
+            None => {
+                guard.injection.record_query(query);
+                Ok(success_json(&serde_json::json!({
+                    "injected": false,
+                    "reason": "no memory scored above relevance threshold",
+                    "memory": null
+                })))
+            }
+        }
+    }
+
+    async fn handle_handoff_summary(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let from_session = uuid::Uuid::parse_str(
+            args.get("from_session")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| invalid_params("from_session is required"))?,
+        )
+        .map_err(|_| invalid_params("Invalid from_session UUID"))?;
+
+        let summary = args
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid_params("summary is required"))?
+            .to_string();
+
+        if summary.trim().is_empty() {
+            return Err(invalid_params("summary must not be empty"));
+        }
+
+        let project_path = args
+            .get("project_path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let unresolved: Vec<String> = args
+            .get("unresolved")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let next_steps: Vec<String> = args
+            .get("next_steps")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let relevant_memories: Vec<uuid::Uuid> = args
+            .get("relevant_memories")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let handoff =
+            cognimem_server::memory::HandoffSummary::new(
+                from_session,
+                project_path,
+                summary,
+                unresolved,
+                next_steps,
+                relevant_memories,
+            );
+
+        let handoff_id = handoff.from_session;
+        let mut guard = self.state.lock().await;
+        guard.handoffs.push(handoff);
+
+        guard.broker.publish_event(&BrokerEvent::SessionLeft {
+            session_id: handoff_id,
+            agent_id: "cognimem".to_string(),
+        });
+
+        Ok(success_json(&serde_json::json!({
+            "handoff_id": handoff_id,
+            "created_at": chrono::Utc::now().timestamp(),
+            "message": "Handoff summary stored successfully"
+        })))
+    }
+
     async fn handle_simulate_perspective(
         &self,
         args: serde_json::Map<String, serde_json::Value>,
@@ -2308,6 +2529,8 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         storage,
         cli.ollama_model.clone(),
         cli.ollama_url.clone(),
+        cli.redis_url.clone(),
+        cli.agent_id.clone(),
     )));
     {
         let guard = state.lock().await;
@@ -2559,6 +2782,8 @@ mod tests {
     fn make_server() -> CogniMemServer {
         let state = Arc::new(Mutex::new(CogniMemState::new(
             Box::new(InMemoryStore::new()),
+            None,
+            None,
             None,
             None,
         )));

@@ -1,6 +1,9 @@
+use crate::broker::{RedisBroker, SimpleBroker};
 use crate::embeddings::{EmbeddingEngine, HashEmbedding};
 use crate::memory::types::{HandoffSummary, SessionContext, WorkClaim};
-use crate::memory::{MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelManager, SlmEngine};
+use crate::memory::{
+    InjectionDecider, MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelManager, SlmEngine,
+};
 use crate::search::{Fts5Search, SearchEngine, SubstringSearch};
 use std::collections::HashMap;
 
@@ -23,6 +26,8 @@ pub struct CogniMemState {
     pub session_context: Option<SessionContext>,
     pub handoffs: Vec<HandoffSummary>,
     pub project_models: ProjectModelManager,
+    pub injection: InjectionDecider,
+    pub broker: Box<dyn crate::broker::Broker>,
 }
 
 impl CogniMemState {
@@ -30,6 +35,8 @@ impl CogniMemState {
         storage: Box<dyn MemoryStore>,
         ollama_model: Option<String>,
         ollama_url: Option<String>,
+        redis_url: Option<String>,
+        agent_id: Option<String>,
     ) -> Self {
         let mut graph = MemoryGraph::new();
         let mut search: Box<dyn SearchEngine + Send> = match Fts5Search::new() {
@@ -69,6 +76,24 @@ impl CogniMemState {
         for m in &memories {
             search.index(m.id, &indexed_content(m), m.tier);
         }
+        let broker: Box<dyn crate::broker::Broker> = if let (Some(url), Some(agent)) =
+            (redis_url, agent_id)
+        {
+            let rb = RedisBroker::new(url, agent);
+            match rb.connect() {
+                Ok(()) => {
+                    tracing::info!("Redis broker connected");
+                    Box::new(rb)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to connect Redis broker: {e}, falling back to no-op");
+                    Box::new(SimpleBroker::new())
+                }
+            }
+        } else {
+            Box::new(SimpleBroker::new())
+        };
+
         Self {
             graph,
             storage,
@@ -79,6 +104,8 @@ impl CogniMemState {
             session_context: None,
             handoffs: Vec::new(),
             project_models: ProjectModelManager::new(),
+            injection: InjectionDecider::new(),
+            broker,
         }
     }
 }

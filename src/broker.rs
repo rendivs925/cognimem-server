@@ -1,6 +1,6 @@
 use redis::{Client, Commands};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 pub const DEFAULT_REDIS_URL: &str = "redis://localhost:6379";
@@ -76,7 +76,7 @@ impl BrokerEvent {
 }
 
 pub struct RedisBroker {
-    conn: RefCell<Option<redis::Connection>>,
+    conn: Mutex<Option<redis::Connection>>,
     url: String,
     agent_id: String,
 }
@@ -84,7 +84,7 @@ pub struct RedisBroker {
 impl RedisBroker {
     pub fn new(url: String, agent_id: String) -> Self {
         Self {
-            conn: RefCell::new(None),
+            conn: Mutex::new(None),
             url,
             agent_id,
         }
@@ -94,16 +94,16 @@ impl RedisBroker {
         let client = Client::open(self.url.as_str())?;
         let conn = client.get_connection()?;
         tracing::info!("Redis broker connected to {}", self.url);
-        *self.conn.borrow_mut() = Some(conn);
+        *self.conn.lock().unwrap() = Some(conn);
         Ok(())
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.conn.borrow().is_some()
+    pub fn connected(&self) -> bool {
+        self.conn.lock().unwrap().is_some()
     }
 
-    pub fn publish(&self, event: &BrokerEvent) -> Result<(), redis::RedisError> {
-        let mut binding = self.conn.borrow_mut();
+    pub fn redis_publish(&self, event: &BrokerEvent) -> Result<(), redis::RedisError> {
+        let mut binding = self.conn.lock().unwrap();
         let conn = match binding.as_mut() {
             Some(c) => c,
             None => return Ok(()),
@@ -120,6 +120,29 @@ impl RedisBroker {
     }
 }
 
+pub trait Broker: Send + Sync {
+    fn publish_event(&self, event: &BrokerEvent);
+    fn is_connected(&self) -> bool;
+}
+
+impl Broker for RedisBroker {
+    fn publish_event(&self, event: &BrokerEvent) {
+        let _ = self.redis_publish(event);
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected()
+    }
+}
+
+impl Broker for SimpleBroker {
+    fn publish_event(&self, _event: &BrokerEvent) {}
+
+    fn is_connected(&self) -> bool {
+        self.is_connected()
+    }
+}
+
 pub struct SimpleBroker;
 
 impl SimpleBroker {
@@ -127,7 +150,7 @@ impl SimpleBroker {
         Self
     }
 
-    pub fn publish(&self, _event: &BrokerEvent) -> Result<(), redis::RedisError> {
+    pub fn publish_inner(&self, _event: &BrokerEvent) -> Result<(), redis::RedisError> {
         Ok(())
     }
 

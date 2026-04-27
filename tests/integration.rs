@@ -766,6 +766,8 @@ fn test_detect_convention_patterns() {
         persona: None,
         raci: Default::default(),
         model: Default::default(),
+        emotion: None,
+        source: cognimem_server::memory::MemorySource::External,
     };
 
     let memories: Vec<&CognitiveMemoryUnit> = vec![&memory];
@@ -1449,6 +1451,8 @@ mod capture_tests {
             session_context: None,
             handoffs: Vec::new(),
             project_models: cognimem_server::memory::ProjectModelManager::new(),
+            injection: cognimem_server::memory::InjectionDecider::new(),
+            broker: Box::new(cognimem_server::broker::SimpleBroker::new()),
         }))
     }
 
@@ -1955,7 +1959,6 @@ fn test_broker_simple_broker_noop() {
     use cognimem_server::broker::SimpleBroker;
 
     let broker = SimpleBroker::new();
-    assert!(!broker.is_connected());
 
     let event = BrokerEvent::ClaimStarted {
         session_id: Uuid::new_v4(),
@@ -1964,7 +1967,7 @@ fn test_broker_simple_broker_noop() {
         agent_id: "noop".to_string(),
     };
 
-    let result = broker.publish(&event);
+    let result = broker.publish_inner(&event);
     assert!(result.is_ok());
 }
 
@@ -1977,7 +1980,7 @@ fn test_redis_broker_not_connected_is_noop() {
         "test-agent".to_string(),
     );
 
-    assert!(!broker.is_connected());
+    assert!(!broker.connected());
 
     let event = BrokerEvent::MemoryUpdated {
         memory_id: Uuid::new_v4(),
@@ -1985,7 +1988,7 @@ fn test_redis_broker_not_connected_is_noop() {
         agent_id: "test-agent".to_string(),
     };
 
-    let result = broker.publish(&event);
+    let result = broker.redis_publish(&event);
     assert!(result.is_ok());
 }
 

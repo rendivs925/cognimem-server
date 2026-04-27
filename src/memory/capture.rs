@@ -107,6 +107,8 @@ impl CaptureIngest {
             persona: None,
             raci: super::types::RaciRoles::default(),
             model: super::types::ModelMemoryMetadata::default(),
+            emotion: None,
+            source: super::types::MemorySource::External,
         })
     }
 }

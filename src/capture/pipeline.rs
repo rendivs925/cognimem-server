@@ -1,6 +1,6 @@
 use super::types::{CanonicalEvent, CanonicalEventType, IngestResult};
-use crate::memory::slm_types::{ClassifyMemoryInput, CompressMemoryInput};
-use crate::memory::types::{CognitiveMemoryUnit, MemoryScope, MemoryTier};
+use crate::memory::slm_types::{ClassifyMemoryInput, CompressMemoryInput, TagEmotionInput};
+use crate::memory::types::{CognitiveMemoryUnit, EmotionState, MemoryScope, MemorySource, MemoryTier};
 use crate::state::CogniMemState;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -249,7 +249,7 @@ impl CapturePipeline {
     async fn store_event(&mut self, event: &CanonicalEvent) -> Result<bool, String> {
         let content = event.compose_content();
 
-        let (tier, importance, tags, suppress, compressed, model_name, confidence) = {
+        let (tier, importance, tags, suppress, compressed, model_name, confidence, emotion) = {
             let guard = self.state.lock().await;
             let classify_result = guard
                 .slm
@@ -264,6 +264,14 @@ impl CapturePipeline {
                 .compress_memory(CompressMemoryInput {
                     content: content.clone(),
                     tier_hint: classify_result.as_ref().map(|c| c.tier),
+                })
+                .await
+                .ok();
+
+            let emotion_result = guard
+                .slm
+                .tag_emotion(TagEmotionInput {
+                    content: content.clone(),
                 })
                 .await
                 .ok();
@@ -293,9 +301,13 @@ impl CapturePipeline {
                 .as_ref()
                 .map(|c| c.metadata.confidence)
                 .unwrap_or(0.0);
+            let emotion = emotion_result.map(|e| EmotionState {
+                valence: e.valence,
+                arousal: e.arousal,
+            });
 
             (
-                tier, importance, tags, suppress, compressed, model_name, confidence,
+                tier, importance, tags, suppress, compressed, model_name, confidence, emotion,
             )
         };
 
@@ -313,6 +325,8 @@ impl CapturePipeline {
         let decay_rate = tier.decay_rate();
         let mut memory = CognitiveMemoryUnit::new(content.clone(), tier, importance, decay_rate);
         memory.scope = scope;
+        memory.source = MemorySource::External;
+        memory.emotion = emotion;
         memory.model.tags = tags;
         memory.model.model_name = Some(model_name);
         memory.model.confidence = Some(confidence);
@@ -373,6 +387,8 @@ mod tests {
             session_context: None,
             handoffs: Vec::new(),
             project_models: crate::memory::ProjectModelManager::new(),
+            injection: crate::memory::InjectionDecider::new(),
+            broker: Box::new(crate::broker::SimpleBroker::new()),
         }))
     }
 

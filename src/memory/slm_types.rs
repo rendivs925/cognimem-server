@@ -239,6 +239,31 @@ pub struct TeachFromDemonstrationOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagEmotionInput {
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagEmotionOutput {
+    pub valence: f32,
+    pub arousal: f32,
+    pub metadata: SlmMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreRelevanceInput {
+    pub query: String,
+    pub candidate_content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreRelevanceOutput {
+    pub relevance: f32,
+    pub reasoning: Option<String>,
+    pub metadata: SlmMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulatePerspectiveInput {
     pub perspective_role: String,
     pub situation: String,

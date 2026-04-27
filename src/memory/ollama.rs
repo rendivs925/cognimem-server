@@ -2,14 +2,16 @@ use super::slm::{SlmEngine, SlmError};
 use super::slm_prompts::{
     classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt, distill_skill_prompt,
     extract_best_practice_prompt, extract_persona_prompt, rerank_candidates_prompt,
-    resolve_conflict_prompt, summarize_session_prompt, summarize_turn_prompt,
+    resolve_conflict_prompt, score_relevance_prompt, summarize_session_prompt,
+    summarize_turn_prompt, tag_emotion_prompt,
 };
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
     DistillSkillInput, DistillSkillOutput, ExtractBestPracticeInput,
     ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
-    SimulatePerspectiveInput, SimulatePerspectiveOutput,
+    ScoreRelevanceInput, ScoreRelevanceOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
+    TagEmotionInput, TagEmotionOutput,
     TeachFromDemonstrationInput, TeachFromDemonstrationOutput, RerankCandidatesInput,
     RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
     SlmMetadata, SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
@@ -552,6 +554,31 @@ impl SlmEngine for OllamaSlm {
         let mut output: SimulatePerspectiveOutput =
             self.parse_json(self.generate_with_retry(&prompt, 250).await).await?;
         output.confidence = Self::clamp_confidence(output.confidence);
+        Ok(output)
+    }
+
+    async fn tag_emotion(&self, input: TagEmotionInput) -> Result<TagEmotionOutput, SlmError> {
+        let prompt = tag_emotion_prompt(&input);
+        let mut output: TagEmotionOutput =
+            self.parse_json(self.generate_with_retry(&prompt, 80).await).await?;
+        output.valence = output.valence.clamp(-1.0, 1.0);
+        output.arousal = output.arousal.clamp(0.0, 1.0);
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Ok(output)
+    }
+
+    async fn score_relevance(
+        &self,
+        input: ScoreRelevanceInput,
+    ) -> Result<ScoreRelevanceOutput, SlmError> {
+        let prompt = score_relevance_prompt(&input);
+        let mut output: ScoreRelevanceOutput =
+            self.parse_json(self.generate_with_retry(&prompt, 80).await).await?;
+        output.relevance = output.relevance.clamp(0.0, 1.0);
+        output.reasoning = output.reasoning.map(|r| r.trim().to_string());
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)
     }
 }

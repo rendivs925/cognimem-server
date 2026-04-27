@@ -3,6 +3,34 @@ use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmotionState {
+    pub valence: f32,
+    pub arousal: f32,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Display,
+    Default,
+    IntoStaticStr,
+    EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum MemorySource {
+    #[default]
+    External,
+    Internal,
+    Dreamt,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelMemoryMetadata {
     #[serde(default)]
@@ -293,6 +321,12 @@ pub struct CognitiveMemoryUnit {
     /// Persisted model-derived metadata for this memory.
     #[serde(default)]
     pub model: ModelMemoryMetadata,
+    /// Emotional valence (-1.0 to 1.0) and arousal (0.0 to 1.0) state.
+    #[serde(default)]
+    pub emotion: Option<EmotionState>,
+    /// Origin of this memory: external (hooks), internal (self-generated), dreamt.
+    #[serde(default)]
+    pub source: MemorySource,
 }
 
 impl Default for CognitiveMemoryUnit {
@@ -317,6 +351,8 @@ impl CognitiveMemoryUnit {
             persona: None,
             raci: RaciRoles::default(),
             model: ModelMemoryMetadata::default(),
+            emotion: None,
+            source: MemorySource::External,
         }
     }
 

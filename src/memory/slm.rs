@@ -2,10 +2,11 @@ use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
     DistillSkillInput, DistillSkillOutput, ExtractBestPracticeInput, ExtractBestPracticeOutput,
-    ExtractPersonaInput, ExtractPersonaOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
-    TeachFromDemonstrationInput, TeachFromDemonstrationOutput, RerankCandidatesInput,
-    RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput, SummarizeSessionInput,
-    SummarizeSessionOutput, SummarizeTurnInput,
+    ExtractPersonaInput, ExtractPersonaOutput, ScoreRelevanceInput, ScoreRelevanceOutput,
+    SimulatePerspectiveInput, SimulatePerspectiveOutput,
+    TagEmotionInput, TagEmotionOutput, TeachFromDemonstrationInput, TeachFromDemonstrationOutput,
+    RerankCandidatesInput, RerankCandidatesOutput, ResolveConflictInput, ResolveConflictOutput,
+    SummarizeSessionInput, SummarizeSessionOutput, SummarizeTurnInput,
     SummarizeTurnOutput,
 };
 use async_trait::async_trait;
@@ -85,6 +86,11 @@ pub trait SlmEngine: Send + Sync {
         &self,
         input: SimulatePerspectiveInput,
     ) -> Result<SimulatePerspectiveOutput, SlmError>;
+    async fn tag_emotion(&self, input: TagEmotionInput) -> Result<TagEmotionOutput, SlmError>;
+    async fn score_relevance(
+        &self,
+        input: ScoreRelevanceInput,
+    ) -> Result<ScoreRelevanceOutput, SlmError>;
 }
 
 pub struct NoOpSlm;
@@ -197,6 +203,19 @@ impl SlmEngine for NoOpSlm {
         &self,
         input: SimulatePerspectiveInput,
     ) -> Result<SimulatePerspectiveOutput, SlmError> {
+        drop(input);
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
+    }
+
+    async fn tag_emotion(&self, input: TagEmotionInput) -> Result<TagEmotionOutput, SlmError> {
+        drop(input);
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
+    }
+
+    async fn score_relevance(
+        &self,
+        input: ScoreRelevanceInput,
+    ) -> Result<ScoreRelevanceOutput, SlmError> {
         drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }
