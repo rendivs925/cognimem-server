@@ -142,7 +142,9 @@ pub struct CompletePatternOutput {
 pub struct TurnSummary {
     pub turn_id: Uuid,
     pub content: String,
+    #[serde(default)]
     pub tool_usage: Vec<String>,
+    #[serde(default)]
     pub decisions: Vec<String>,
 }
 

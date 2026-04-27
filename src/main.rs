@@ -5,15 +5,18 @@ use cognimem_server::capture::{CapturePipeline, start_capture_server};
 use cognimem_server::embeddings::fuse_scores;
 use cognimem_server::broker::BrokerEvent;
 use cognimem_server::memory::{
-    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus, ClaimType,
-    ClassifyMemoryInput, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternInput,
-    CompletePatternResult, CompressMemoryInput, EmotionState, ExecuteSkillArgs, ExecuteSkillResult,
-    ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, ForgetArgs, ForgetResult,
-    GetObservationsArgs, HandoffSummaryArgs, InMemoryStore, InjectMemoryArgs, ListMemoriesArgs,
-    ListMemoriesResult, MemoryScope, MemoryStore, MemorySummary, MemoryTier, ObservationsResult,
-    RecallArgs, RecallResult, ReflectArgs, ReflectResult, RememberArgs, RememberResult, RerankCandidateInput,
+    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus,
+    ClassifyMemoryInput, CognitiveMemoryUnit, ClaimWorkArgs, CompletePatternArgs,
+    CompletePatternInput, CompletePatternResult, CompressMemoryInput, DelegateToLlmArgs,
+    EmotionState, ExecuteSkillArgs, ExecuteSkillResult, ExtractBestPracticeArgs,
+    ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, FindUnclaimedWorkArgs,
+    ForgetArgs, ForgetResult, GetObservationsArgs, GetProjectConventionsArgs, HandoffSummaryArgs,
+    InMemoryStore, InjectMemoryArgs, ListMemoriesArgs, ListMemoriesResult, MemoryScope,
+    MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
+    ReflectArgs, ReflectResult, ReleaseWorkArgs, RememberArgs, RememberResult, RerankCandidateInput,
     RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs,
-    SearchResult, SearchResults, SkillMemory, SlmError, TimelineArgs, TimelineResult, WorkClaim,
+    SearchResult, SearchResults, SimulatePerspectiveArgs, SkillMemory, SlmError,
+    TeachFromDemonstrationArgs, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
@@ -23,9 +26,7 @@ use cognimem_server::memory::{
     complete_pattern, detect_and_create_skill, execute_skill as run_skill, extract_persona,
     find_skill, rank_by_timescale, strengthen_co_activated, apply_stdp,
 };
-use cognimem_server::memory::slm_types::{
-    DelegateInput, SimulatePerspectiveInput, TeachFromDemonstrationInput,
-};
+use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
 use cognimem_server::metrics::{
     inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
 };
@@ -1649,29 +1650,8 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let memory_id = uuid::Uuid::parse_str(
-            args.get("memory_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("memory_id is required"))?,
-        )
-        .map_err(|_| invalid_params("Invalid memory_id format"))?;
-
-        let claim_type_str = args
-            .get("claim_type")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("claim_type is required"))?;
-        let claim_type = match claim_type_str {
-            "research" => ClaimType::Research,
-            "implementation" => ClaimType::Implementation,
-            "testing" => ClaimType::Testing,
-            "review" => ClaimType::Review,
-            _ => {
-                return Err(invalid_params(
-                    "Invalid claim_type. Must be: research, implementation, testing, or review",
-                ));
-            }
-        };
-        let hours = args.get("hours").and_then(|v| v.as_i64()).unwrap_or(24);
+        let args: ClaimWorkArgs = parse_args(args)?;
+        let hours = args.hours.unwrap_or(24);
 
         let mut guard = self.state.lock().await;
 
@@ -1681,27 +1661,27 @@ impl CogniMemServer {
             .map(|s| s.session_id)
             .unwrap_or_else(uuid::Uuid::new_v4);
 
-        if let Some(existing) = guard.work_claims.get(&memory_id)
+        if let Some(existing) = guard.work_claims.get(&args.memory_id)
             && existing.status == ClaimStatus::Active
             && !existing.is_expired()
         {
             return Err(invalid_params(&format!(
                 "Memory {} is already claimed by session {}",
-                memory_id, existing.session_id
+                args.memory_id, existing.session_id
             )));
         }
 
-        let claim = WorkClaim::new(memory_id, session_id, claim_type, hours);
+        let claim = WorkClaim::new(args.memory_id, session_id, args.claim_type, hours);
         let claim_clone = claim.clone();
-        guard.work_claims.insert(memory_id, claim);
+        guard.work_claims.insert(args.memory_id, claim);
 
         Ok(success_json(&serde_json::json!({
-            "memory_id": memory_id,
+            "memory_id": args.memory_id,
             "session_id": session_id,
             "claim_type": claim_clone.claim_type.to_string(),
             "leased_until": claim_clone.leased_until,
             "status": claim_clone.status.to_string(),
-            "message": format!("Claimed memory {} for {} hours", memory_id, hours)
+            "message": format!("Claimed memory {} for {} hours", args.memory_id, hours)
         })))
     }
 
@@ -1709,25 +1689,16 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let memory_id = uuid::Uuid::parse_str(
-            args.get("memory_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| invalid_params("memory_id is required"))?,
-        )
-        .map_err(|_| invalid_params("Invalid memory_id format"))?;
-
-        let complete = args
-            .get("complete")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let args: ReleaseWorkArgs = parse_args(args)?;
 
         let mut guard = self.state.lock().await;
 
         let claim = guard
             .work_claims
-            .get_mut(&memory_id)
-            .ok_or_else(|| invalid_params(&format!("No claim found for memory {}", memory_id)))?;
+            .get_mut(&args.memory_id)
+            .ok_or_else(|| invalid_params(&format!("No claim found for memory {}", args.memory_id)))?;
 
+        let complete = args.complete.unwrap_or(false);
         if complete {
             claim.complete();
         } else {
@@ -1736,13 +1707,13 @@ impl CogniMemServer {
 
         let status = claim.status.to_string();
         let message = if complete {
-            format!("Marked memory {} as completed", memory_id)
+            format!("Marked memory {} as completed", args.memory_id)
         } else {
-            format!("Released claim on memory {}", memory_id)
+            format!("Released claim on memory {}", args.memory_id)
         };
 
         Ok(success_json(&serde_json::json!({
-            "memory_id": memory_id,
+            "memory_id": args.memory_id,
             "status": status,
             "message": message
         })))
@@ -1752,11 +1723,7 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let project_path = args
-            .get("project_path")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+        let args: FindUnclaimedWorkArgs = parse_args(args)?;
 
         let guard = self.state.lock().await;
 
@@ -1767,7 +1734,7 @@ impl CogniMemServer {
                 && claim.is_expired()
                 && let Some(mem) = guard.graph.get_memory(id)
             {
-                if let Some(ref pp) = project_path {
+                if let Some(ref pp) = args.project_path {
                     if let Some(ref mem_pp) = mem.scope.project_path() {
                         if mem_pp != pp {
                             continue;
@@ -1786,7 +1753,7 @@ impl CogniMemServer {
             }
         }
 
-        available.truncate(limit);
+        available.truncate(args.limit.unwrap_or(10));
 
         Ok(success_json(&serde_json::json!({
             "available": available,
@@ -1800,50 +1767,7 @@ impl CogniMemServer {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         use cognimem_server::memory::slm_types::SummarizeTurnInput;
 
-        let turns = args
-            .get("turns")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| invalid_params("turns is required"))?
-            .iter()
-            .map(|v| {
-                let turn_id = v
-                    .get("turn_id")
-                    .and_then(|x| x.as_str())
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                    .unwrap_or_else(uuid::Uuid::new_v4);
-                let content = v
-                    .get("content")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let tool_usage: Vec<String> = v
-                    .get("tool_usage")
-                    .and_then(|x| x.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let decisions: Vec<String> = v
-                    .get("decisions")
-                    .and_then(|x| x.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                cognimem_server::memory::slm_types::TurnSummary {
-                    turn_id,
-                    content,
-                    tool_usage,
-                    decisions,
-                }
-            })
-            .collect();
-
-        let input = SummarizeTurnInput { turns };
+        let input: SummarizeTurnInput = parse_args(args)?;
         let guard = self.state.lock().await;
         let output = guard
             .slm
@@ -1858,94 +1782,9 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        use cognimem_server::memory::slm_types::{SummarizeSessionInput, TaskSummary};
+        use cognimem_server::memory::slm_types::SummarizeSessionInput;
 
-        let turns: Vec<_> = args
-            .get("turns")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .map(|v| {
-                        let turn_id = v
-                            .get("turn_id")
-                            .and_then(|x| x.as_str())
-                            .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                            .unwrap_or_else(uuid::Uuid::new_v4);
-                        let content = v
-                            .get("content")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        cognimem_server::memory::slm_types::TurnSummary {
-                            turn_id,
-                            content,
-                            tool_usage: Vec::new(),
-                            decisions: Vec::new(),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let completed_tasks: Vec<TaskSummary> = args
-            .get("completed_tasks")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| {
-                        Some(TaskSummary {
-                            task_id: v
-                                .get("task_id")
-                                .and_then(|x| x.as_str())
-                                .and_then(|s| uuid::Uuid::parse_str(s).ok()),
-                            title: v
-                                .get("title")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            status: v
-                                .get("status")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("completed")
-                                .to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let open_tasks: Vec<TaskSummary> = args
-            .get("open_tasks")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| {
-                        Some(TaskSummary {
-                            task_id: v
-                                .get("task_id")
-                                .and_then(|x| x.as_str())
-                                .and_then(|s| uuid::Uuid::parse_str(s).ok()),
-                            title: v
-                                .get("title")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            status: v
-                                .get("status")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("open")
-                                .to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let input = SummarizeSessionInput {
-            turns,
-            completed_tasks,
-            open_tasks,
-        };
+        let input: SummarizeSessionInput = parse_args(args)?;
         let guard = self.state.lock().await;
         let output = guard
             .slm
@@ -1960,19 +1799,12 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        use cognimem_server::memory::slm_types::ExtractBestPracticeInput;
+        let args: ExtractBestPracticeArgs = parse_args(args)?;
 
-        let content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("content is required"))?
-            .to_string();
-        let context = args
-            .get("context")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-
-        let input = ExtractBestPracticeInput { content, context };
+        let input = cognimem_server::memory::slm_types::ExtractBestPracticeInput {
+            content: args.content,
+            context: args.context,
+        };
         let guard = self.state.lock().await;
         let output = guard
             .slm
@@ -1987,17 +1819,13 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let project_path = args
-            .get("project_path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("project_path is required"))?
-            .to_string();
+        let args: GetProjectConventionsArgs = parse_args(args)?;
 
         let guard = self.state.lock().await;
-        let conventions = guard.project_models.suggest_conventions(&project_path);
+        let conventions = guard.project_models.suggest_conventions(&args.project_path);
 
         Ok(success_json(&serde_json::json!({
-            "project_path": project_path,
+            "project_path": args.project_path,
             "conventions": conventions,
             "count": conventions.len()
         })))
@@ -2007,25 +1835,12 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let query = args
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("query is required"))?
-            .to_string();
-        let context: Vec<String> = args
-            .get("context")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default();
-        let confidence_threshold = args
-            .get("confidence_threshold")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.85) as f32;
+        let args: DelegateToLlmArgs = parse_args(args)?;
 
-        let input = DelegateInput {
-            query,
-            context,
-            confidence_threshold,
+        let input = cognimem_server::memory::slm_types::DelegateInput {
+            query: args.query,
+            context: args.context.unwrap_or_default(),
+            confidence_threshold: args.confidence_threshold.unwrap_or(0.85),
         };
         let guard = self.state.lock().await;
         let output = guard
@@ -2041,30 +1856,13 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let demonstration = args
-            .get("demonstration")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("demonstration is required"))?
-            .to_string();
-        let pattern_extracted = args
-            .get("pattern_extracted")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_default();
-        let domain = args
-            .get("domain")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let source_type = args
-            .get("source_type")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let args: TeachFromDemonstrationArgs = parse_args(args)?;
 
-        let input = TeachFromDemonstrationInput {
-            demonstration,
-            pattern_extracted,
-            domain,
-            source_type,
+        let input = cognimem_server::memory::slm_types::TeachFromDemonstrationInput {
+            demonstration: args.demonstration,
+            pattern_extracted: args.pattern_extracted.unwrap_or_default(),
+            domain: args.domain,
+            source_type: args.source_type,
         };
         let guard = self.state.lock().await;
         let output = guard
@@ -2196,26 +1994,12 @@ impl CogniMemServer {
         &self,
         args: serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let perspective_role = args
-            .get("perspective_role")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("perspective_role is required"))?
-            .to_string();
-        let situation = args
-            .get("situation")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("situation is required"))?
-            .to_string();
-        let question = args
-            .get("question")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| invalid_params("question is required"))?
-            .to_string();
+        let args: SimulatePerspectiveArgs = parse_args(args)?;
 
         let input = SimulatePerspectiveInput {
-            perspective_role,
-            situation,
-            question,
+            perspective_role: args.perspective_role,
+            situation: args.situation,
+            question: args.question,
         };
         let guard = self.state.lock().await;
         let output = guard
@@ -2813,6 +2597,7 @@ mod tests {
         let err = server
             .handle_summarize_turn(object_args(json!({
                 "turns": [{
+                    "turn_id": "00000000-0000-0000-0000-000000000001",
                     "content": "implemented feature X",
                     "tool_usage": ["grep"],
                     "decisions": ["use enum"]
@@ -2830,7 +2615,10 @@ mod tests {
 
         let err = server
             .handle_summarize_session(object_args(json!({
-                "turns": [{"content": "worked on API"}],
+                "turns": [{
+                    "turn_id": "00000000-0000-0000-0000-000000000001",
+                    "content": "worked on API"
+                }],
                 "completed_tasks": [{"title": "task a", "status": "completed"}],
                 "open_tasks": [{"title": "task b", "status": "open"}]
             })))

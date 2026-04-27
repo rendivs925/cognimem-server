@@ -417,6 +417,68 @@ pub struct HandoffSummaryArgs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClaimWorkArgs {
+    pub memory_id: Uuid,
+    pub claim_type: ClaimType,
+    #[serde(default)]
+    pub hours: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReleaseWorkArgs {
+    pub memory_id: Uuid,
+    #[serde(default)]
+    pub complete: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FindUnclaimedWorkArgs {
+    #[serde(default)]
+    pub project_path: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GetProjectConventionsArgs {
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DelegateToLlmArgs {
+    pub query: String,
+    #[serde(default)]
+    pub context: Option<Vec<String>>,
+    #[serde(default)]
+    pub confidence_threshold: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TeachFromDemonstrationArgs {
+    pub demonstration: String,
+    #[serde(default)]
+    pub pattern_extracted: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SimulatePerspectiveArgs {
+    pub perspective_role: String,
+    pub situation: String,
+    pub question: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtractBestPracticeArgs {
+    pub content: String,
+    #[serde(default)]
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RememberArgs {
     /// The content to store as a memory.
     pub content: String,
@@ -934,9 +996,10 @@ impl SessionContext {
 }
 
 /// Work claim types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimType {
+    #[default]
     Research,
     Implementation,
     Testing,
