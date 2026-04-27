@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod consolidation;
 pub mod decay;
+pub mod dream;
 pub mod graph;
 pub mod in_memory;
 pub mod injection;

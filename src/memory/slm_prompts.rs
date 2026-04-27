@@ -1,5 +1,5 @@
 use super::slm_types::{
-    ClassifyMemoryInput, CompletePatternInput, CompressMemoryInput, DistillSkillInput,
+    ClassifyMemoryInput, CompletePatternInput, CompressMemoryInput, DistillSkillInput, DreamInput,
     ExtractBestPracticeInput, ExtractPersonaInput, RerankCandidatesInput, ResolveConflictInput,
     ScoreRelevanceInput, SummarizeSessionInput, SummarizeTurnInput, TagEmotionInput,
 };
@@ -131,6 +131,13 @@ pub fn score_relevance_prompt(input: &ScoreRelevanceInput) -> String {
     format!(
         "{} {{\"relevance\":0.0,\"reasoning\":null,\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Score relevance 0-1 of candidate to query. Query: {}. Candidate: {}",
         JSON_FUNCTION_HEADER, OUTPUT_RULES, input.query, input.candidate_content
+    )
+}
+
+pub fn dream_prompt(input: &DreamInput) -> String {
+    format!(
+        "{} {{\"dreamt_content\":\"string\",\"insight\":\"string\",\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Creatively merge these two unrelated memories into one novel dream-like memory. Memory A: {}. Memory B: {}. Extract a surprising insight from the combination.",
+        JSON_FUNCTION_HEADER, OUTPUT_RULES, input.memory_a, input.memory_b
     )
 }
 

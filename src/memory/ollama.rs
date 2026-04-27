@@ -1,14 +1,14 @@
 use super::slm::{SlmEngine, SlmError};
 use super::slm_prompts::{
     classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt, distill_skill_prompt,
-    extract_best_practice_prompt, extract_persona_prompt, rerank_candidates_prompt,
+    dream_prompt, extract_best_practice_prompt, extract_persona_prompt, rerank_candidates_prompt,
     resolve_conflict_prompt, score_relevance_prompt, summarize_session_prompt,
     summarize_turn_prompt, tag_emotion_prompt,
 };
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
-    DistillSkillInput, DistillSkillOutput, ExtractBestPracticeInput,
+    DistillSkillInput, DistillSkillOutput, DreamInput, DreamOutput, ExtractBestPracticeInput,
     ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
     ScoreRelevanceInput, ScoreRelevanceOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
     TagEmotionInput, TagEmotionOutput,
@@ -577,6 +577,20 @@ impl SlmEngine for OllamaSlm {
             self.parse_json(self.generate_with_retry(&prompt, 80).await).await?;
         output.relevance = output.relevance.clamp(0.0, 1.0);
         output.reasoning = output.reasoning.map(|r| r.trim().to_string());
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Ok(output)
+    }
+
+    async fn dream(&self, input: DreamInput) -> Result<DreamOutput, SlmError> {
+        let prompt = dream_prompt(&input);
+        let mut output: DreamOutput =
+            self.parse_json(self.generate_with_retry(&prompt, 200).await).await?;
+        output.dreamt_content = output.dreamt_content.trim().to_string();
+        output.insight = output.insight.trim().to_string();
+        if output.dreamt_content.is_empty() {
+            return Err(SlmError::ValidationFailed("dream content was empty".to_string()));
+        }
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
         Ok(output)

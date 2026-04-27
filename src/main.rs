@@ -2164,6 +2164,7 @@ async fn consolidation_task(
             storage,
             search,
             embedder,
+            slm,
             ..
         } = &mut *guard;
 
@@ -2179,6 +2180,24 @@ async fn consolidation_task(
                 error!("Failed to delete consolidated memory {}: {e}", id);
             }
         }
+
+        let dreamt = match cognimem_server::memory::dream::create_dream_memory(
+            graph,
+            embedder.as_ref(),
+            slm.as_ref(),
+        )
+        .await
+        {
+            Ok(Some((id, insight))) => {
+                tracing::info!("Dreamt new memory {id}: {insight}");
+                1
+            }
+            Ok(None) => 0,
+            Err(e) => {
+                tracing::warn!("Dreaming failed: {e}");
+                0
+            }
+        };
 
         let promoted = promote_memories(graph);
         let pruned = prune_below_threshold(graph, prune_threshold);
@@ -2197,12 +2216,13 @@ async fn consolidation_task(
         }
 
         set_memory_count(graph.len() as u64);
-        if !conflicts.is_empty() || promoted > 0 || !pruned.is_empty() {
+        if !conflicts.is_empty() || dreamt > 0 || promoted > 0 || !pruned.is_empty() {
             tracing::info!(
-                "Consolidation cycle complete: conflicts={}, resolved={}, promoted={}, pruned={}",
+                "Consolidation cycle complete: conflicts={}, resolved={}, promoted={}, dreamt={}, pruned={}",
                 conflicts.len(),
                 resolved.len(),
                 promoted,
+                dreamt,
                 pruned.len()
             );
         }

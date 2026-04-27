@@ -253,6 +253,19 @@ pub struct TagEmotionOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamInput {
+    pub memory_a: String,
+    pub memory_b: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamOutput {
+    pub dreamt_content: String,
+    pub insight: String,
+    pub metadata: SlmMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreRelevanceInput {
     pub query: String,
     pub candidate_content: String,
