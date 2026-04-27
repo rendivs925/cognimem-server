@@ -12,7 +12,7 @@ use cognimem_server::memory::{
     MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
     ReflectArgs, ReflectResult, RememberArgs, RememberResult, RerankCandidateInput,
     RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs, SearchResult,
-    SearchResults, SkillMemory, SlmEngine, SlmError, TimelineArgs, TimelineResult, WorkClaim,
+    SearchResults, SkillMemory, SlmError, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
@@ -1790,16 +1790,11 @@ impl CogniMemServer {
 
         let input = SummarizeTurnInput { turns };
         let guard = self.state.lock().await;
-        let output = match guard.slm.summarize_turn(input.clone()).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!("Falling back to noop summarize_turn: {e}");
-                cognimem_server::memory::NoOpSlm
-                    .summarize_turn(input)
-                    .await
-                    .map_err(|fallback| slm_failed("summarize_turn", "noop", fallback))?
-            }
-        };
+        let output = guard
+            .slm
+            .summarize_turn(input)
+            .await
+            .map_err(|e| slm_failed("summarize_turn", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }
@@ -1897,16 +1892,11 @@ impl CogniMemServer {
             open_tasks,
         };
         let guard = self.state.lock().await;
-        let output = match guard.slm.summarize_session(input.clone()).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!("Falling back to noop summarize_session: {e}");
-                cognimem_server::memory::NoOpSlm
-                    .summarize_session(input)
-                    .await
-                    .map_err(|fallback| slm_failed("summarize_session", "noop", fallback))?
-            }
-        };
+        let output = guard
+            .slm
+            .summarize_session(input)
+            .await
+            .map_err(|e| slm_failed("summarize_session", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }
@@ -1929,16 +1919,11 @@ impl CogniMemServer {
 
         let input = ExtractBestPracticeInput { content, context };
         let guard = self.state.lock().await;
-        let output = match guard.slm.extract_best_practice(input.clone()).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!("Falling back to noop extract_best_practice: {e}");
-                cognimem_server::memory::NoOpSlm
-                    .extract_best_practice(input)
-                    .await
-                    .map_err(|fallback| slm_failed("extract_best_practice", "noop", fallback))?
-            }
-        };
+        let output = guard
+            .slm
+            .extract_best_practice(input)
+            .await
+            .map_err(|e| slm_failed("extract_best_practice", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }
@@ -1988,13 +1973,11 @@ impl CogniMemServer {
             confidence_threshold,
         };
         let guard = self.state.lock().await;
-        let output = match guard.slm.delegate_to_llm(input.clone()).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!("Falling back to noop delegate_to_llm: {e}");
-                guard.slm.delegate_to_llm(input).await.map_err(|fallback| slm_failed("delegate_to_llm", "noop", fallback))?
-            }
-        };
+        let output = guard
+            .slm
+            .delegate_to_llm(input)
+            .await
+            .map_err(|e| slm_failed("delegate_to_llm", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }
@@ -2029,13 +2012,11 @@ impl CogniMemServer {
             source_type,
         };
         let guard = self.state.lock().await;
-        let output = match guard.slm.teach_from_demonstration(input.clone()).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!("Falling back to noop teach_from_demonstration: {e}");
-                guard.slm.teach_from_demonstration(input).await.map_err(|fallback| slm_failed("teach_from_demonstration", "noop", fallback))?
-            }
-        };
+        let output = guard
+            .slm
+            .teach_from_demonstration(input)
+            .await
+            .map_err(|e| slm_failed("teach_from_demonstration", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }
@@ -2066,13 +2047,11 @@ impl CogniMemServer {
             question,
         };
         let guard = self.state.lock().await;
-        let output = match guard.slm.simulate_perspective(input.clone()).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::warn!("Falling back to noop simulate_perspective: {e}");
-                guard.slm.simulate_perspective(input).await.map_err(|fallback| slm_failed("simulate_perspective", "noop", fallback))?
-            }
-        };
+        let output = guard
+            .slm
+            .simulate_perspective(input)
+            .await
+            .map_err(|e| slm_failed("simulate_perspective", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }
@@ -2567,5 +2546,184 @@ struct BootstrapLockGuard(PathBuf);
 impl Drop for BootstrapLockGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cognimem_server::memory::pattern::CompletePatternResult;
+    use cognimem_server::memory::{ExtractPersonaResult, InMemoryStore, PersonaDomain};
+    use serde_json::{Map, Value, json};
+
+    fn make_server() -> CogniMemServer {
+        let state = Arc::new(Mutex::new(CogniMemState::new(
+            Box::new(InMemoryStore::new()),
+            None,
+            None,
+        )));
+        CogniMemServer::new(state)
+    }
+
+    fn object_args(value: Value) -> Map<String, Value> {
+        match value {
+            Value::Object(map) => map,
+            _ => unreachable!("expected JSON object args"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_extract_persona_falls_back_to_heuristics() {
+        let server = make_server();
+        {
+            let mut guard = server.state.lock().await;
+            for content in [
+                "I deployed the rust service to production",
+                "I fixed a critical auth bug for the backend",
+                "I work on API reliability and observability",
+            ] {
+                let memory = CognitiveMemoryUnit::new(
+                    content.to_string(),
+                    MemoryTier::Semantic,
+                    0.8,
+                    MemoryTier::Semantic.decay_rate(),
+                );
+                let id = guard.graph.add_memory(memory);
+                let embedding = guard.embedder.embed(content);
+                guard.graph.set_embedding(id, embedding);
+            }
+        }
+
+        let result = server.handle_extract_persona(Map::new()).await.unwrap();
+        let typed: ExtractPersonaResult = result.into_typed().unwrap();
+
+        assert!(!typed.profiles.is_empty());
+        assert!(typed.profiles.iter().any(|profile| profile.domain == PersonaDomain::Work));
+    }
+
+    #[tokio::test]
+    async fn handle_complete_pattern_returns_graph_candidates_when_slm_is_unavailable() {
+        let server = make_server();
+        {
+            let mut guard = server.state.lock().await;
+            let memory = CognitiveMemoryUnit::new(
+                "use Result for recoverable errors".to_string(),
+                MemoryTier::Semantic,
+                0.9,
+                MemoryTier::Semantic.decay_rate(),
+            );
+            let id = guard.graph.add_memory(memory);
+            let embedding = guard.embedder.embed("use Result for recoverable errors");
+            guard.graph.set_embedding(id, embedding);
+        }
+
+        let result = server
+            .handle_complete_pattern(object_args(json!({
+                "cue": "use Result",
+                "tolerance": 0.1,
+                "limit": 3
+            })))
+            .await
+            .unwrap();
+        let typed: CompletePatternResult = result.into_typed().unwrap();
+
+        assert!(!typed.candidates.is_empty());
+        assert!(typed.candidates[0].memory.content.contains("Result"));
+    }
+
+    #[tokio::test]
+    async fn handle_summarize_turn_returns_slm_error_when_provider_is_missing() {
+        let server = make_server();
+
+        let err = server
+            .handle_summarize_turn(object_args(json!({
+                "turns": [{
+                    "content": "implemented feature X",
+                    "tool_usage": ["grep"],
+                    "decisions": ["use enum"]
+                }]
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("Ollama request failed"));
+    }
+
+    #[tokio::test]
+    async fn handle_summarize_session_returns_slm_error_when_provider_is_missing() {
+        let server = make_server();
+
+        let err = server
+            .handle_summarize_session(object_args(json!({
+                "turns": [{"content": "worked on API"}],
+                "completed_tasks": [{"title": "task a", "status": "completed"}],
+                "open_tasks": [{"title": "task b", "status": "open"}]
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("Ollama request failed"));
+    }
+
+    #[tokio::test]
+    async fn handle_extract_best_practice_returns_slm_error_when_provider_is_missing() {
+        let server = make_server();
+
+        let err = server
+            .handle_extract_best_practice(object_args(json!({
+                "content": "Use guard clauses and keep functions small"
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("Ollama request failed"));
+    }
+
+    #[tokio::test]
+    async fn handle_delegate_to_llm_returns_slm_error_when_provider_is_missing() {
+        let server = make_server();
+
+        let err = server
+            .handle_delegate_to_llm(object_args(json!({
+                "query": "How should I structure this auth flow?",
+                "confidence_threshold": 0.9,
+                "context": ["rust", "auth"]
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("Ollama request failed"));
+    }
+
+    #[tokio::test]
+    async fn handle_teach_from_demonstration_returns_slm_error_when_provider_is_missing() {
+        let server = make_server();
+
+        let err = server
+            .handle_teach_from_demonstration(object_args(json!({
+                "demonstration": "Prefer Result<T, E> for recoverable failures",
+                "pattern_extracted": "error handling",
+                "source_type": "code_review"
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("Ollama request failed"));
+    }
+
+    #[tokio::test]
+    async fn handle_simulate_perspective_returns_slm_error_when_provider_is_missing() {
+        let server = make_server();
+
+        let err = server
+            .handle_simulate_perspective(object_args(json!({
+                "perspective_role": "security_expert",
+                "situation": "user login flow",
+                "question": "What is the biggest risk?"
+            })))
+            .await
+            .unwrap_err();
+
+        assert!(err.message.contains("Ollama request failed"));
     }
 }
