@@ -1,7 +1,8 @@
 use super::slm_types::{
     ClassifyMemoryInput, CompletePatternInput, CompressMemoryInput, DistillSkillInput, DreamInput,
-    ExtractBestPracticeInput, ExtractPersonaInput, RerankCandidatesInput, ResolveConflictInput,
-    ScoreRelevanceInput, SummarizeSessionInput, SummarizeTurnInput, TagEmotionInput,
+    ExtractBestPracticeInput, ExtractPersonaInput, ImagineInput, RerankCandidatesInput,
+    ResolveConflictInput, ScoreRelevanceInput, SummarizeSessionInput, SummarizeTurnInput,
+    TagEmotionInput,
 };
 
 const JSON_FUNCTION_HEADER: &str = r#"You are a JSON function.
@@ -131,6 +132,14 @@ pub fn score_relevance_prompt(input: &ScoreRelevanceInput) -> String {
     format!(
         "{} {{\"relevance\":0.0,\"reasoning\":null,\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Score relevance 0-1 of candidate to query. Query: {}. Candidate: {}",
         JSON_FUNCTION_HEADER, OUTPUT_RULES, input.query, input.candidate_content
+    )
+}
+
+pub fn imagine_prompt(input: &ImagineInput) -> String {
+    let ctx = input.context.join("\n- ");
+    format!(
+        "{} {{\"predicted_outcome\":\"string\",\"confidence\":0.0,\"alternative_outcomes\":[\"string\"],\"metadata\":{{\"model\":\"\",\"confidence\":0.0}}}} {} Given this scenario: \"{}\" and relevant context:\n- {}\nPredict the most likely outcome. Also list alternative outcomes.",
+        JSON_FUNCTION_HEADER, OUTPUT_RULES, input.scenario, ctx
     )
 }
 

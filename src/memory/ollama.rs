@@ -1,14 +1,15 @@
 use super::slm::{SlmEngine, SlmError};
 use super::slm_prompts::{
     classify_memory_prompt, complete_pattern_prompt, compress_memory_prompt, distill_skill_prompt,
-    dream_prompt, extract_best_practice_prompt, extract_persona_prompt, rerank_candidates_prompt,
-    resolve_conflict_prompt, score_relevance_prompt, summarize_session_prompt,
-    summarize_turn_prompt, tag_emotion_prompt,
+    dream_prompt, extract_best_practice_prompt, extract_persona_prompt, imagine_prompt,
+    rerank_candidates_prompt, resolve_conflict_prompt, score_relevance_prompt,
+    summarize_session_prompt, summarize_turn_prompt, tag_emotion_prompt,
 };
 use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
     DistillSkillInput, DistillSkillOutput, DreamInput, DreamOutput, ExtractBestPracticeInput,
+    ImagineInput, ImagineOutput,
     ExtractBestPracticeOutput, ExtractPersonaInput, ExtractPersonaOutput,
     ScoreRelevanceInput, ScoreRelevanceOutput, SimulatePerspectiveInput, SimulatePerspectiveOutput,
     TagEmotionInput, TagEmotionOutput,
@@ -590,6 +591,21 @@ impl SlmEngine for OllamaSlm {
         output.insight = output.insight.trim().to_string();
         if output.dreamt_content.is_empty() {
             return Err(SlmError::ValidationFailed("dream content was empty".to_string()));
+        }
+        output.metadata.model = self.model.clone();
+        output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);
+        Ok(output)
+    }
+
+    async fn imagine(&self, input: ImagineInput) -> Result<ImagineOutput, SlmError> {
+        let prompt = imagine_prompt(&input);
+        let mut output: ImagineOutput =
+            self.parse_json(self.generate_with_retry(&prompt, 250).await).await?;
+        output.predicted_outcome = output.predicted_outcome.trim().to_string();
+        output.confidence = Self::clamp_confidence(output.confidence);
+        output.alternative_outcomes.retain(|o| !o.trim().is_empty());
+        if output.predicted_outcome.is_empty() {
+            return Err(SlmError::ValidationFailed("predicted outcome was empty".to_string()));
         }
         output.metadata.model = self.model.clone();
         output.metadata.confidence = Self::clamp_confidence(output.metadata.confidence);

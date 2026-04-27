@@ -266,6 +266,20 @@ pub struct DreamOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagineInput {
+    pub scenario: String,
+    pub context: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImagineOutput {
+    pub predicted_outcome: String,
+    pub confidence: f32,
+    pub alternative_outcomes: Vec<String>,
+    pub metadata: SlmMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreRelevanceInput {
     pub query: String,
     pub candidate_content: String,

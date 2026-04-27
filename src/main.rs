@@ -10,7 +10,7 @@ use cognimem_server::memory::{
     CompletePatternInput, CompletePatternResult, CompressMemoryInput, DelegateToLlmArgs,
     EmotionState, ExecuteSkillArgs, ExecuteSkillResult, ExtractBestPracticeArgs,
     ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, FindUnclaimedWorkArgs,
-    ForgetArgs, ForgetResult, GetObservationsArgs, GetProjectConventionsArgs, HandoffSummaryArgs,
+    ForgetArgs, ForgetResult,     GetObservationsArgs, GetProjectConventionsArgs, HandoffSummaryArgs, ImagineArgs, ImagineInput,
     InMemoryStore, InjectMemoryArgs, ListMemoriesArgs, ListMemoriesResult, MemoryScope,
     MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
     ReflectArgs, ReflectResult, ReleaseWorkArgs, RememberArgs, RememberResult, RerankCandidateInput,
@@ -626,6 +626,20 @@ impl ServerHandler for CogniMemServer {
                     "required": ["from_session", "summary"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("imagine"),
+                Cow::Borrowed(
+                    "Simulate a hypothetical scenario using relevant memories as context",
+                ),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "scenario": { "type": "string", "description": "The hypothetical scenario to simulate" },
+                        "context": { "type": "array", "items": { "type": "string" }, "description": "Optional additional context strings" }
+                    },
+                    "required": ["scenario"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -676,6 +690,7 @@ impl ServerHandler for CogniMemServer {
             "simulate_perspective" => self.handle_simulate_perspective(args).await,
             "inject_memory" => self.handle_inject_memory(args).await,
             "handoff_summary" => self.handle_handoff_summary(args).await,
+            "imagine" => self.handle_imagine(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -2007,6 +2022,37 @@ impl CogniMemServer {
             .simulate_perspective(input)
             .await
             .map_err(|e| slm_failed("simulate_perspective", guard.slm.model_name(), e))?;
+
+        Ok(success_json(&output))
+    }
+
+    async fn handle_imagine(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: ImagineArgs = parse_args(args)?;
+
+        let guard = self.state.lock().await;
+        let query_emb = guard.embedder.embed(&args.scenario);
+        let similar = guard.graph.vector_search(&query_emb, 5, 0.2);
+        let memory_context: Vec<String> = similar
+            .iter()
+            .filter_map(|(id, _)| guard.graph.get_memory(id))
+            .map(|m| format!("[{}] {}", m.tier, m.content.chars().take(200).collect::<String>()))
+            .collect();
+
+        let mut context = args.context.unwrap_or_default();
+        context.extend(memory_context);
+
+        let input = ImagineInput {
+            scenario: args.scenario,
+            context,
+        };
+        let output = guard
+            .slm
+            .imagine(input)
+            .await
+            .map_err(|e| slm_failed("imagine", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
     }

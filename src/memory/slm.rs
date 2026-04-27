@@ -2,7 +2,7 @@ use super::slm_types::{
     ClassifyMemoryInput, ClassifyMemoryOutput, CompletePatternInput, CompletePatternOutput,
     CompressMemoryInput, CompressMemoryOutput, DelegateInput, DelegateOutput,
     DistillSkillInput, DistillSkillOutput, DreamInput, DreamOutput,
-    ExtractBestPracticeInput, ExtractBestPracticeOutput,
+    ExtractBestPracticeInput, ExtractBestPracticeOutput, ImagineInput, ImagineOutput,
     ExtractPersonaInput, ExtractPersonaOutput, ScoreRelevanceInput, ScoreRelevanceOutput,
     SimulatePerspectiveInput, SimulatePerspectiveOutput,
     TagEmotionInput, TagEmotionOutput, TeachFromDemonstrationInput, TeachFromDemonstrationOutput,
@@ -93,6 +93,7 @@ pub trait SlmEngine: Send + Sync {
         input: ScoreRelevanceInput,
     ) -> Result<ScoreRelevanceOutput, SlmError>;
     async fn dream(&self, input: DreamInput) -> Result<DreamOutput, SlmError>;
+    async fn imagine(&self, input: ImagineInput) -> Result<ImagineOutput, SlmError>;
 }
 
 pub struct NoOpSlm;
@@ -223,6 +224,11 @@ impl SlmEngine for NoOpSlm {
     }
 
     async fn dream(&self, input: DreamInput) -> Result<DreamOutput, SlmError> {
+        drop(input);
+        Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
+    }
+
+    async fn imagine(&self, input: ImagineInput) -> Result<ImagineOutput, SlmError> {
         drop(input);
         Err(SlmError::RequestFailed(NOOP_ERROR.to_string()))
     }

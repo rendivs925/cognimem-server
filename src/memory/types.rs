@@ -510,6 +510,13 @@ pub struct ExtractBestPracticeArgs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImagineArgs {
+    pub scenario: String,
+    #[serde(default)]
+    pub context: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RememberArgs {
     /// The content to store as a memory.
     pub content: String,
