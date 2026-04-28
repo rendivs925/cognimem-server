@@ -23,7 +23,7 @@ pub struct DashboardState {
 }
 
 pub async fn start_dashboard_server(state: Arc<Mutex<CogniMemState>>, port: u16) {
-    let theme = get_theme("aura");
+    let theme = get_theme("onyx");
     let app_state = DashboardState { state, theme };
     let app = Router::new()
         .route("/", get(dashboard_index))
