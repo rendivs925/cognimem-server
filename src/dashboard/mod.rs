@@ -1,3 +1,5 @@
+mod theme;
+
 use axum::{
     extract::State,
     http::StatusCode,
@@ -12,13 +14,17 @@ use tower_http::cors::CorsLayer;
 use crate::memory::MemoryTier;
 use crate::state::CogniMemState;
 
+pub use theme::get_theme;
+
 #[derive(Clone)]
 pub struct DashboardState {
     pub state: Arc<Mutex<CogniMemState>>,
+    pub theme: theme::Theme,
 }
 
 pub async fn start_dashboard_server(state: Arc<Mutex<CogniMemState>>, port: u16) {
-    let app_state = DashboardState { state };
+    let theme = get_theme("aura");
+    let app_state = DashboardState { state, theme };
     let app = Router::new()
         .route("/", get(dashboard_index))
         .route("/api/memories", get(api_memories))
@@ -33,33 +39,58 @@ pub async fn start_dashboard_server(state: Arc<Mutex<CogniMemState>>, port: u16)
     axum::serve(listener, app).await.unwrap();
 }
 
-const HTML: &str = include_str!("index.html");
+const TEMPLATE: &str = include_str!("index.html");
 
-async fn dashboard_index() -> Html<String> {
-    Html(HTML.to_string())
+fn render_template(theme: &theme::Theme) -> String {
+    TEMPLATE
+        .replace("{{TITLE}}", "CogniMem")
+        .replace("{{CSS}}", &theme.css())
+        .replace("{{LOGO}}", r#"Cogni<span>Mem</span>"#)
+        .replace("{{ACTIVE_MEM}}", "active")
+        .replace("{{ACTIVE_GRAPH}}", "")
+        .replace("{{ACTIVE_STATS}}", "")
+        .replace("{{NAV_MEMORIES}}", "Memories")
+        .replace("{{NAV_CODEGRAPH}}", "Code Graph")
+        .replace("{{NAV_STATS}}", "Stats")
+        .replace("{{MAIN_TITLE}}", "Dashboard")
+        .replace("{{MAIN_SUBTITLE}}", "Cognitive Memory System")
+        .replace("{{STATS}}", "")
+        .replace("{{CARD_HEADER}}", "Memories")
+        .replace("{{CONTENT}}", "")
+}
+
+async fn dashboard_index(State(state): State<DashboardState>) -> Html<String> {
+    Html(render_template(&state.theme))
 }
 
 async fn api_stats(State(state): State<DashboardState>) -> Json<serde_json::Value> {
     let guard = state.state.lock().await;
     let ms = guard.graph.get_all_memories();
     
-    let mut by_tier: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    for tier in ["sensory", "working", "episodic", "semantic", "procedural"] {
-        let count = ms.iter().filter(|m| m.tier.to_string() == tier).count();
-        by_tier.insert(tier.to_string(), serde_json::json!(count));
-    }
-    
+    let total = ms.len();
+    let sensory = ms.iter().filter(|m| matches!(m.tier, MemoryTier::Sensory)).count();
+    let working = ms.iter().filter(|m| matches!(m.tier, MemoryTier::Working)).count();
+    let episodic = ms.iter().filter(|m| matches!(m.tier, MemoryTier::Episodic)).count();
+    let semantic = ms.iter().filter(|m| matches!(m.tier, MemoryTier::Semantic)).count();
+    let procedural = ms.iter().filter(|m| matches!(m.tier, MemoryTier::Procedural)).count();
+
     Json(serde_json::json!({
-        "total": ms.len(),
-        "by_tier": by_tier,
+        "total": total,
+        "sensory": sensory,
+        "working": working,
+        "episodic": episodic,
+        "semantic": semantic,
+        "procedural": procedural,
         "code_nodes": guard.code_graph.len(),
     }))
 }
 
-fn tier_color(tier: &str) -> &'static str {
+fn tier_class(tier: &str) -> &'static str {
     match tier {
-        "sensory" => "tier-sensory", "working" => "tier-working",
-        "episodic" => "tier-episodic", "semantic" => "tier-semantic",
+        "sensory" => "tier-sensory",
+        "working" => "tier-working",
+        "episodic" => "tier-episodic",
+        "semantic" => "tier-semantic",
         _ => "tier-procedural",
     }
 }
@@ -85,7 +116,7 @@ async fn api_memories(State(state): State<DashboardState>) -> Html<String> {
             <td class="metric">{:.2}</td>
         </tr>"#,
             short_id,
-            tier_color(&tier_str),
+            tier_class(&tier_str),
             tier_str,
             m.content.chars().take(60).collect::<String>(),
             m.metadata.base_activation,
@@ -128,10 +159,7 @@ async fn api_remember(
     State(state): State<DashboardState>,
     Json(payload): Json<serde_json::Value>,
 ) -> (StatusCode, Html<String>) {
-    let content = payload
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
     
     if content.is_empty() {
         return (StatusCode::BAD_REQUEST, Html("Content required".to_string()));
