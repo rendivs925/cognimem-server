@@ -49,6 +49,8 @@ fn render_template(theme: &theme::Theme) -> String {
         .replace("{{TITLE}}", "CogniMem")
         .replace("{{CSS}}", &theme.css())
         .replace("{{LOGO}}", "CogniMem")
+        .replace("{{MAIN_TITLE}}", "CogniMem Dashboard")
+        .replace("{{MAIN_SUBTITLE}}", "Cognitive memory system for AI agents")
 }
 
 async fn dashboard_index(State(state): State<DashboardState>) -> Html<String> {
