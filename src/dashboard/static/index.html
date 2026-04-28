@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CogniMem</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root { {{CSS_VARS}} }
+        body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--fg); }
+        .font-mono { font-family: 'JetBrains Mono', monospace !important; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    </style>
+</head>
+<body class="h-full">
+    <div class="flex h-screen overflow-hidden">
+        <aside class="flex-shrink-0 border-r flex flex-col" style="width:var(--sidebar-width);background:var(--sidebar-bg);border-color:var(--border)">
+            <div class="px-4 pt-6 pb-8 text-lg font-bold tracking-tight">CogniMem</div>
+            <nav class="flex-1 px-3 space-y-0.5" id="nav">
+                <div class="text-[10px] uppercase tracking-widest opacity-40 px-3 pt-4 pb-1.5">Core</div>
+                <div class="nav-item active" data-view="memories" onclick="switchView('memories')">
+                    <span class="text-sm">Memories</span>
+                </div>
+                <div class="nav-item" data-view="codegraph" onclick="switchView('codegraph')">
+                    <span class="text-sm">Code Graph</span>
+                </div>
+                <div class="nav-item" data-view="search" onclick="switchView('search')">
+                    <span class="text-sm">Search</span>
+                </div>
+                <div class="text-[10px] uppercase tracking-widest opacity-40 px-3 pt-4 pb-1.5">Analysis</div>
+                <div class="nav-item" data-view="stats" onclick="switchView('stats')">
+                    <span class="text-sm">Statistics</span>
+                </div>
+                <div class="nav-item" data-view="skills" onclick="switchView('skills')">
+                    <span class="text-sm">Skills</span>
+                </div>
+                <div class="nav-item" data-view="persona" onclick="switchView('persona')">
+                    <span class="text-sm">Persona</span>
+                </div>
+                <div class="text-[10px] uppercase tracking-widest opacity-40 px-3 pt-4 pb-1.5">Workflows</div>
+                <div class="nav-item" data-view="work" onclick="switchView('work')">
+                    <span class="text-sm">Work Items</span>
+                </div>
+                <div class="nav-item" data-view="timeline" onclick="switchView('timeline')">
+                    <span class="text-sm">Timeline</span>
+                </div>
+            </nav>
+        </aside>
+        <main class="flex-1 overflow-y-auto p-8" id="main">
+            <div id="page-title" class="text-2xl font-semibold mb-1"></div>
+            <div id="page-subtitle" class="text-sm opacity-50 mb-6"></div>
+            <div id="toolbar" class="flex gap-3 mb-5 items-center"></div>
+            <div id="content"></div>
+        </main>
+    </div>
+
+    <div id="modal" class="fixed inset-0 bg-black/75 hidden items-center justify-center z-50" onclick="closeModal()">
+        <div class="rounded-xl border max-w-lg w-11/12 max-h-[80vh] overflow-y-auto p-6" style="background:var(--surface);border-color:var(--border)" onclick="event.stopPropagation()">
+            <div id="modal-content"></div>
+        </div>
+    </div>
+
+    <div id="add-modal" class="fixed inset-0 bg-black/75 hidden items-center justify-center z-50" onclick="document.getElementById('add-modal').classList.add('hidden')">
+        <div class="rounded-xl border max-w-lg w-11/12 p-6" style="background:var(--surface);border-color:var(--border)" onclick="event.stopPropagation()">
+            <h3 class="text-lg font-semibold mb-4">New Memory</h3>
+            <textarea id="new-memory-content" rows="4" class="w-full rounded-lg border px-3 py-2 text-sm mb-3" style="background:var(--hover);border-color:var(--border);color:var(--fg)" placeholder="Memory content..."></textarea>
+            <select id="new-memory-tier" class="w-full rounded-lg border px-3 py-2 text-sm mb-4" style="background:var(--hover);border-color:var(--border);color:var(--fg)">
+                <option value="sensory">Sensory</option>
+                <option value="working">Working</option>
+                <option value="episodic" selected>Episodic</option>
+                <option value="semantic">Semantic</option>
+                <option value="procedural">Procedural</option>
+            </select>
+            <button onclick="addMemory()" class="px-4 py-2 rounded-lg text-sm font-semibold border-0 cursor-pointer" style="background:var(--accent);color:var(--bg)">Save</button>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
