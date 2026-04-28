@@ -754,22 +754,61 @@ impl ServerHandler for CogniMemServer {
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
         let _ = (request, context);
         let guard = self.state.lock().await;
-        let resources: Vec<Resource> = guard
-            .graph
-            .get_all_memories()
-            .iter()
-            .map(|m| {
-                Resource::new(
-                    RawResource::new(format!("memory://{}/{}", m.tier, m.id), &m.content)
-                        .with_description(format!(
-                            "Memory in {} tier with activation {:.3}",
-                            m.tier, m.metadata.base_activation
-                        ))
-                        .with_mime_type("application/json"),
-                    None,
-                )
-            })
-            .collect();
+        let mut resources: Vec<Resource> = Vec::new();
+
+        for m in guard.graph.get_all_memories() {
+            resources.push(Resource::new(
+                RawResource::new(format!("memory://{}/{}", m.tier, m.id), &m.content)
+                    .with_description(format!(
+                        "Memory in {} tier with activation {:.3}",
+                        m.tier, m.metadata.base_activation
+                    ))
+                    .with_mime_type("application/json"),
+                None,
+            ));
+        }
+
+        resources.push(Resource::new(
+            RawResource::new("todo://list", "All todos/tasks in Procedural tier")
+                .with_mime_type("application/json"),
+            None,
+        ));
+
+        resources.push(Resource::new(
+            RawResource::new("skill://list", "All learned skills in Procedural tier")
+                .with_mime_type("application/json"),
+            None,
+        ));
+
+        resources.push(Resource::new(
+            RawResource::new("context://current", "Current session context")
+                .with_mime_type("application/json"),
+            None,
+        ));
+
+        resources.push(Resource::new(
+            RawResource::new("context://history", "Session handoff history")
+                .with_mime_type("application/json"),
+            None,
+        ));
+
+        resources.push(Resource::new(
+            RawResource::new("code://list", "All discovered code nodes")
+                .with_mime_type("application/json"),
+            None,
+        ));
+
+        for f in guard.code_graph.all_files().into_iter().take(10) {
+            let name = f.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            resources.push(Resource::new(
+                RawResource::new(format!("code://{}", name), &format!("Code nodes in {}", name))
+                    .with_mime_type("application/json"),
+                None,
+            ));
+        }
+
         Ok(ListResourcesResult::with_all_items(resources))
     }
 
@@ -780,41 +819,124 @@ impl ServerHandler for CogniMemServer {
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
         let _ = context;
         let uri = &request.uri;
-        if !uri.starts_with("memory://") {
-            return Err(rmcp::ErrorData::new(
-                rmcp::model::ErrorCode(-32602),
-                Cow::Owned(format!("Invalid resource URI: {uri}")),
-                None,
-            ));
+        let guard = self.state.lock().await;
+
+        if uri.starts_with("memory://") {
+            let path = &uri["memory://".len()..];
+            let id_str = path.split('/').next_back().unwrap_or("");
+            let id = uuid::Uuid::parse_str(id_str).map_err(|e| {
+                rmcp::ErrorData::new(
+                    rmcp::model::ErrorCode(-32602),
+                    Cow::Owned(format!("Invalid memory ID: {e}")),
+                    None,
+                )
+            })?;
+
+            let memory = guard.graph.get_memory(&id).ok_or_else(|| {
+                rmcp::ErrorData::new(
+                    rmcp::model::ErrorCode(-32602),
+                    Cow::Owned(format!("Memory not found: {id}")),
+                    None,
+                )
+            })?;
+
+            let json = serde_json::to_string(memory).unwrap_or_else(|e| {
+                tracing::error!("Failed to serialize memory for resource read: {e}");
+                format!("{{\"error\":\"serialization failed: {e}\"}}")
+            });
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
         }
 
-        let path = &uri["memory://".len()..];
-        let id_str = path.split('/').next_back().unwrap_or("");
-        let id = uuid::Uuid::parse_str(id_str).map_err(|e| {
-            rmcp::ErrorData::new(
-                rmcp::model::ErrorCode(-32602),
-                Cow::Owned(format!("Invalid memory ID: {e}")),
-                None,
-            )
-        })?;
+        if uri.starts_with("todo://") {
+            let todos: Vec<serde_json::Value> = guard
+                .graph
+                .get_by_tier(MemoryTier::Procedural)
+                .iter()
+                .filter(|m| m.content.to_lowercase().contains("todo") || m.content.to_lowercase().contains("task"))
+                .take(20)
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "content": m.content,
+                        "status": if m.metadata.base_activation > 0.5 { "active" } else { "pending" },
+                        "created_at": m.metadata.created_at,
+                    })
+                })
+                .collect();
 
-        let guard = self.state.lock().await;
-        let memory = guard.graph.get_memory(&id).ok_or_else(|| {
-            rmcp::ErrorData::new(
-                rmcp::model::ErrorCode(-32602),
-                Cow::Owned(format!("Memory not found: {id}")),
-                None,
-            )
-        })?;
+            let json = serde_json::to_string(&todos).unwrap_or_default();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+        }
 
-        let json = serde_json::to_string(memory).unwrap_or_else(|e| {
-            tracing::error!("Failed to serialize memory for resource read: {e}");
-            format!("{{\"error\":\"serialization failed: {e}\"}}")
-        });
-        Ok(ReadResourceResult::new(vec![ResourceContents::text(
-            json,
-            uri.clone(),
-        )]))
+        if uri.starts_with("skill://") {
+            let skills: Vec<serde_json::Value> = guard
+                .graph
+                .get_by_tier(MemoryTier::Procedural)
+                .iter()
+                .filter(|m| m.content.starts_with("[skill:") || m.persona.is_some())
+                .take(20)
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "name": m.persona.map(|p| format!("{:?}", p)).unwrap_or_else(|| "unnamed".to_string()),
+                        "content": m.content,
+                    })
+                })
+                .collect();
+
+            let json = serde_json::to_string(&skills).unwrap_or_default();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+        }
+
+        if uri.starts_with("context://") {
+            if let Some(ref ctx) = guard.session_context {
+                let json = serde_json::to_string(ctx).unwrap_or_default();
+                return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+            }
+
+            let sessions: Vec<serde_json::Value> = guard
+                .handoffs
+                .iter()
+                .take(10)
+                .map(|h| {
+                    serde_json::json!({
+                        "from_session": h.from_session,
+                        "summary": h.summary,
+                        "unresolved": h.unresolved,
+                    })
+                })
+                .collect();
+
+            let json = serde_json::to_string(&sessions).unwrap_or_default();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+        }
+
+        if uri.starts_with("code://") {
+            let path = &uri["code://".len()..];
+            let nodes = if path.is_empty() || path == "list" {
+                guard.code_graph.all_files()
+                    .iter()
+                    .flat_map(|f| guard.code_graph.get_nodes_in_file(f))
+                    .take(50)
+                    .collect::<Vec<_>>()
+            } else if let Ok(id) = uuid::Uuid::parse_str(path) {
+                guard.code_graph.get_node(&id).into_iter().collect()
+            } else {
+                guard.code_graph.search_by_name(path)
+                    .into_iter()
+                    .take(20)
+                    .collect()
+            };
+
+            let json = serde_json::to_string(&nodes).unwrap_or_default();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+        }
+
+        Err(rmcp::ErrorData::new(
+            rmcp::model::ErrorCode(-32602),
+            Cow::Owned(format!("Invalid resource URI: {uri}")),
+            None,
+        ))
     }
 }
 
