@@ -2686,6 +2686,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let capture_pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
     tokio::spawn(start_capture_server(capture_pipeline, cli.capture_port));
     tokio::spawn(start_dashboard_server(state.clone(), cli.dashboard_port));
+    tracing::info!("Dashboard starting on http://localhost:{}", cli.dashboard_port);
 
     tokio::spawn(decay_task(
         state.clone(),
