@@ -6,6 +6,17 @@
     <title>{{TITLE}}</title>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+    <script>
+        function setActive(link) {
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            link.classList.add('active');
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.nav-item').forEach(link => {
+                link.addEventListener('click', () => setActive(link));
+            });
+        });
+    </script>
     <style>{{CSS}}</style>
 </head>
 <body>
@@ -13,18 +24,17 @@
         <div class="sidebar">
             <div class="logo">{{LOGO}}</div>
             <div class="nav">
-                <a class="nav-item {{ACTIVE_MEM}}" hx-get="/api/memories" hx-target="#content" hx-swap="innerHTML">{{NAV_MEMORIES}}</a>
-                <a class="nav-item {{ACTIVE_GRAPH}}" hx-get="/api/graph" hx-target="#content" hx-swap="innerHTML">{{NAV_CODEGRAPH}}</a>
-                <a class="nav-item {{ACTIVE_STATS}}" hx-get="/api/stats" hx-target="#stats" hx-swap="innerHTML">{{NAV_STATS}}</a>
+                <a class="nav-item" hx-get="/api/memories" hx-target="#content">Memories</a>
+                <a class="nav-item" hx-get="/api/graph" hx-target="#content">Code Graph</a>
+                <a class="nav-item" hx-get="/api/stats" hx-target="#content">Stats</a>
             </div>
         </div>
         <div class="main">
             <div class="title">{{MAIN_TITLE}}</div>
             <div class="subtitle">{{MAIN_SUBTITLE}}</div>
-            <div id="stats" class="stats" hx-get="/api/stats" hx-trigger="load">{{STATS}}</div>
             <div class="card">
-                <div class="card-header">{{CARD_HEADER}}</div>
-                <div hx-get="/api/memories" hx-trigger="load">{{CONTENT}}</div>
+                <div class="card-header" id="card-header">Memories</div>
+                <div id="content" hx-get="/api/memories" hx-trigger="load"></div>
             </div>
         </div>
     </div>

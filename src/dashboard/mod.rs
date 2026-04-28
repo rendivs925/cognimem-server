@@ -46,17 +46,6 @@ fn render_template(theme: &theme::Theme) -> String {
         .replace("{{TITLE}}", "CogniMem")
         .replace("{{CSS}}", &theme.css())
         .replace("{{LOGO}}", "CogniMem")
-        .replace("{{ACTIVE_MEM}}", "active")
-        .replace("{{ACTIVE_GRAPH}}", "")
-        .replace("{{ACTIVE_STATS}}", "")
-        .replace("{{NAV_MEMORIES}}", "Memories")
-        .replace("{{NAV_CODEGRAPH}}", "Code Graph")
-        .replace("{{NAV_STATS}}", "Stats")
-        .replace("{{MAIN_TITLE}}", "Dashboard")
-        .replace("{{MAIN_SUBTITLE}}", "Cognitive Memory System")
-        .replace("{{STATS}}", "")
-        .replace("{{CARD_HEADER}}", "Memories")
-        .replace("{{CONTENT}}", "")
 }
 
 async fn dashboard_index(State(state): State<DashboardState>) -> Html<String> {
