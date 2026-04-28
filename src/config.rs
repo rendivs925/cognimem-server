@@ -76,4 +76,10 @@ pub struct Cli {
         help = "Unique agent ID for this client (used in broker events)"
     )]
     pub agent_id: Option<String>,
+
+    #[arg(
+        long,
+        help = "Path to project to auto-discover into code graph on startup"
+    )]
+    pub project_path: Option<String>,
 }

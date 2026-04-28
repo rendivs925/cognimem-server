@@ -2548,6 +2548,16 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         let guard = state.lock().await;
         set_memory_count(guard.graph.len() as u64);
     }
+    if let Some(ref project_path) = cli.project_path {
+        let project = std::path::PathBuf::from(project_path);
+        if project.exists() {
+            let mut guard = state.lock().await;
+            match cognimem_server::memory::discover_project(&project, &mut guard.code_graph) {
+                Ok(count) => tracing::info!("Discovered {} code nodes from {}", count, project_path),
+                Err(e) => tracing::warn!("Failed to discover project: {e}"),
+            }
+        }
+    }
     let server = CogniMemServer::new(state.clone());
 
     let capture_pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
@@ -2657,6 +2667,9 @@ fn spawn_daemon(cli: &Cli, socket_path: &Path) -> Result<(), Box<dyn std::error:
         .arg(socket_path)
         .arg("--capture-port")
         .arg(cli.capture_port.to_string());
+    if let Some(ref project) = cli.project_path {
+        command.arg("--project-path").arg(project);
+    }
     if let Some(ref model) = cli.ollama_model {
         command.arg("--ollama-model").arg(model);
     }
