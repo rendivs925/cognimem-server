@@ -5,6 +5,7 @@ use cognimem_server::capture::{CapturePipeline, start_capture_server};
 use cognimem_server::dashboard::start_dashboard_server;
 use cognimem_server::embeddings::fuse_scores;
 use cognimem_server::broker::BrokerEvent;
+use cognimem_server::watcher::start_file_watcher;
 use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus,
     ClassifyMemoryInput, CognitiveMemoryUnit, ClaimWorkArgs, CompletePatternArgs,
@@ -30,7 +31,8 @@ use cognimem_server::memory::{
 };
 use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
 use cognimem_server::metrics::{
-    inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_memory_count,
+    inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_code_node_count,
+    set_memory_count,
 };
 use cognimem_server::state::CogniMemState;
 use config::Cli;
@@ -2676,7 +2678,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let mut guard = state.lock().await;
             let path_str = project.to_string_lossy();
             match cognimem_server::memory::discover_project(&project, &mut guard.code_graph) {
-                Ok(count) => tracing::info!("Discovered {} code nodes from {}", count, path_str),
+                Ok(count) => {
+                    tracing::info!("Discovered {} code nodes from {}", count, path_str);
+                    set_code_node_count(guard.code_graph.len() as u64);
+                }
                 Err(e) => tracing::warn!("Failed to discover project: {e}"),
             }
         }
@@ -2689,6 +2694,14 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(start_capture_server(capture_pipeline, cli.capture_port));
     tokio::spawn(start_dashboard_server(state.clone(), cli.dashboard_port));
     tracing::info!("Dashboard starting on http://localhost:{}", cli.dashboard_port);
+
+    if cli.resolved_project_path().is_some() {
+        tokio::spawn(start_file_watcher(
+            state.clone(),
+            cli.resolved_project_path(),
+            2000,
+        ));
+    }
 
     tokio::spawn(decay_task(
         state.clone(),
