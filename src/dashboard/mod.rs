@@ -32,7 +32,7 @@ pub async fn start_dashboard_server(state: Arc<Mutex<CogniMemState>>, port: u16)
         .route("/api/memories", post(api_remember))
         .route("/api/graph", get(api_code_graph))
         .route("/api/graph/nodes", get(api_graph_nodes))
-        .route("/api/graph/file/:path", get(api_graph_file))
+        .route("/api/graph/file/{path}", get(api_graph_file))
         .route("/api/stats", get(api_stats))
         .layer(CorsLayer::permissive())
         .with_state(app_state);

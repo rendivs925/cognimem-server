@@ -22,7 +22,7 @@ install_direct() {
   echo "Installing CogniMem to $INSTALL_PATH..."
 
   mkdir -p "$INSTALL_PATH"
-  mkdir -p "$DATA_PATH"
+  mkdir -p "$DATA_PATH/cognimem-data"
 
   echo "Building..."
   cargo build --release --bin cognimem-server
@@ -37,7 +37,7 @@ install_direct() {
   "mcp": {
     "cognimem": {
       "type": "local",
-      "command": ["cognimem-server", "--data-path", "$DATA_PATH"],
+      "command": ["cognimem-server", "--data-path", "$DATA_PATH/cognimem-data"],
       "enabled": true
     }
   }
