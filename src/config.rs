@@ -82,6 +82,18 @@ pub struct Cli {
 
     #[arg(long, default_value = "", help = "Path to project to auto-discover (default: current dir if .rs files exist)")]
     pub project_path: String,
+
+    #[arg(long, help = "Enable TLS with certificate file")]
+    pub tls_cert: Option<String>,
+
+    #[arg(long, help = "Enable TLS with private key file")]
+    pub tls_key: Option<String>,
+
+    #[arg(long, help = "Password for encrypted TLS key or data encryption")]
+    pub password: Option<String>,
+
+    #[arg(long, default_value_t = false, help = "Require authentication for all MCP requests")]
+    pub require_auth: bool,
 }
 
 impl Cli {

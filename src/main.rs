@@ -1703,6 +1703,23 @@ impl CogniMemServer {
         let exit_code = run_skill(&skill)
             .map_err(|e| invalid_params(&format!("Skill execution failed: {e}")))?;
 
+        let now = chrono::Utc::now().timestamp();
+        if exit_code == 0 {
+            skill.record_success(now);
+        } else {
+            skill.record_failure(now);
+        }
+
+        let adjusted = skill.adjust_for_accuracy();
+
+        if adjusted || skill.execution_count > 0 {
+            let new_content = format!("{}\n{}", skill.name, serde_json::to_string(&skill).unwrap());
+            if let Some(mem) = guard.graph.get_memory_mut(&memory.id) {
+                mem.content = new_content;
+                mem.metadata.last_accessed = now;
+            }
+        }
+
         Ok(success_json(&ExecuteSkillResult {
             skill_id: memory.id,
             skill_name: skill.name,

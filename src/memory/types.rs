@@ -988,6 +988,14 @@ pub struct SkillMemory {
     pub steps: Vec<String>,
     /// IDs of the source memories this skill was derived from.
     pub source_ids: Vec<Uuid>,
+    /// Number of times this skill has been executed.
+    pub execution_count: u32,
+    /// Number of successful executions.
+    pub success_count: u32,
+    /// Timestamp of last execution.
+    pub last_executed: i64,
+    /// Auto-tuning enabled.
+    pub auto_tune: bool,
 }
 
 impl SkillMemory {
@@ -998,7 +1006,45 @@ impl SkillMemory {
             pattern,
             steps,
             source_ids,
+            execution_count: 0,
+            success_count: 0,
+            last_executed: 0,
+            auto_tune: true,
         }
+    }
+
+    /// Calculate accuracy ratio.
+    pub fn accuracy(&self) -> f32 {
+        if self.execution_count == 0 {
+            return 0.5;
+        }
+        self.success_count as f32 / self.execution_count as f32
+    }
+
+    /// Record a successful execution.
+    pub fn record_success(&mut self, timestamp: i64) {
+        self.execution_count += 1;
+        self.success_count += 1;
+        self.last_executed = timestamp;
+    }
+
+    /// Record a failed execution.
+    pub fn record_failure(&mut self, timestamp: i64) {
+        self.execution_count += 1;
+        self.last_executed = timestamp;
+    }
+
+    /// Adjust skill based on accuracy (self-optimization).
+    pub fn adjust_for_accuracy(&mut self) -> bool {
+        if !self.auto_tune || self.execution_count < 5 {
+            return false;
+        }
+        let acc = self.accuracy();
+        if acc < 0.5 && self.steps.len() > 1 {
+            self.steps.pop();
+            return true;
+        }
+        false
     }
 }
 
