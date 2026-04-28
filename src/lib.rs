@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod dashboard;
 pub mod embeddings;
 pub mod memory;
 pub mod metrics;

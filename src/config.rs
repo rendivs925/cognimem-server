@@ -64,6 +64,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 37778, help = "Port for capture HTTP endpoint")]
     pub capture_port: u16,
 
+    #[arg(long, default_value_t = 37779, help = "Port for web dashboard HTTP endpoint")]
+    pub dashboard_port: u16,
+
     #[arg(
         long,
         default_value = "redis://localhost:6379",

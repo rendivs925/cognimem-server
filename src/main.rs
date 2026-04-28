@@ -2,6 +2,7 @@ mod config;
 
 use clap::Parser;
 use cognimem_server::capture::{CapturePipeline, start_capture_server};
+use cognimem_server::dashboard::start_dashboard_server;
 use cognimem_server::embeddings::fuse_scores;
 use cognimem_server::broker::BrokerEvent;
 use cognimem_server::memory::{
@@ -2562,6 +2563,7 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let capture_pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
     tokio::spawn(start_capture_server(capture_pipeline, cli.capture_port));
+    tokio::spawn(start_dashboard_server(state.clone(), cli.dashboard_port));
 
     tokio::spawn(decay_task(
         state.clone(),
@@ -2666,7 +2668,9 @@ fn spawn_daemon(cli: &Cli, socket_path: &Path) -> Result<(), Box<dyn std::error:
         .arg("--socket-path")
         .arg(socket_path)
         .arg("--capture-port")
-        .arg(cli.capture_port.to_string());
+        .arg(cli.capture_port.to_string())
+        .arg("--dashboard-port")
+        .arg(cli.dashboard_port.to_string());
     if let Some(ref project) = cli.project_path {
         command.arg("--project-path").arg(project);
     }
