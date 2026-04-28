@@ -2,7 +2,8 @@ use crate::broker::{RedisBroker, SimpleBroker};
 use crate::embeddings::{EmbeddingEngine, HashEmbedding};
 use crate::memory::types::{HandoffSummary, SessionContext, WorkClaim};
 use crate::memory::{
-    InjectionDecider, MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelManager, SlmEngine,
+    CodeGraph, InjectionDecider, MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelManager,
+    SlmEngine,
 };
 use crate::search::{Fts5Search, SearchEngine, SubstringSearch};
 use std::collections::HashMap;
@@ -28,6 +29,7 @@ pub struct CogniMemState {
     pub project_models: ProjectModelManager,
     pub injection: InjectionDecider,
     pub broker: Box<dyn crate::broker::Broker>,
+    pub code_graph: CodeGraph,
 }
 
 impl CogniMemState {
@@ -106,6 +108,7 @@ impl CogniMemState {
             project_models: ProjectModelManager::new(),
             injection: InjectionDecider::new(),
             broker,
+            code_graph: CodeGraph::new(),
         }
     }
 }

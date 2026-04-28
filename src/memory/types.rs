@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumString, IntoStaticStr};
@@ -453,6 +455,50 @@ pub struct ClaimWorkArgs {
     pub claim_type: ClaimType,
     #[serde(default)]
     pub hours: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiscoverProjectArgs {
+    pub project_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiscoverProjectResult {
+    pub nodes_discovered: usize,
+    pub files_scanned: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExploreModuleArgs {
+    pub node_id: Option<String>,
+    pub file_path: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeSummaryResult {
+    pub id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub file_path: PathBuf,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub summary: Option<String>,
+    pub children: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchCodebaseArgs {
+    pub query: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchCodebaseResult {
+    pub matches: Vec<NodeSummaryResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -8,15 +8,16 @@ use cognimem_server::memory::{
     AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus,
     ClassifyMemoryInput, CognitiveMemoryUnit, ClaimWorkArgs, CompletePatternArgs,
     CompletePatternInput, CompletePatternResult, CompressMemoryInput, DelegateToLlmArgs,
-    EmotionState, ExecuteSkillArgs, ExecuteSkillResult, ExtractBestPracticeArgs,
-    ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult, FindUnclaimedWorkArgs,
-    ForgetArgs, ForgetResult,     GetObservationsArgs, GetProjectConventionsArgs, HandoffSummaryArgs, ImagineArgs, ImagineInput,
-    InMemoryStore, InjectMemoryArgs, ListMemoriesArgs, ListMemoriesResult, MemoryScope,
-    MemoryStore, MemorySummary, MemoryTier, ObservationsResult, RecallArgs, RecallResult,
-    ReflectArgs, ReflectResult, ReleaseWorkArgs, RememberArgs, RememberResult, RerankCandidateInput,
-    RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs,
-    SearchResult, SearchResults, SimulatePerspectiveArgs, SkillMemory, SlmError,
-    TeachFromDemonstrationArgs, TimelineArgs, TimelineResult, WorkClaim,
+    DiscoverProjectArgs, DiscoverProjectResult, EmotionState, ExecuteSkillArgs, ExecuteSkillResult,
+    ExploreModuleArgs, ExtractBestPracticeArgs, ExtractPersonaInput, ExtractPersonaMemoryInput,
+    ExtractPersonaResult, FindUnclaimedWorkArgs, ForgetArgs, ForgetResult, GetObservationsArgs,
+    GetProjectConventionsArgs, HandoffSummaryArgs, ImagineArgs, ImagineInput, InMemoryStore,
+    InjectMemoryArgs, ListMemoriesArgs, ListMemoriesResult, MemoryScope, MemoryStore,
+    MemorySummary, MemoryTier, NodeSummaryResult, ObservationsResult, RecallArgs, RecallResult,
+    ReflectArgs, ReflectResult, ReleaseWorkArgs, RememberArgs, RememberResult,
+    RerankCandidateInput, RerankCandidatesInput, ResolveConflictInput, RocksDbStore, SearchArgs,
+    SearchCodebaseArgs, SearchCodebaseResult, SearchResult, SearchResults, SimulatePerspectiveArgs,
+    SkillMemory, SlmError, TeachFromDemonstrationArgs, TimelineArgs, TimelineResult, WorkClaim,
 };
 use cognimem_server::memory::{
     apply_decay_to_all, consolidate, detect_conflicts, promote_memories, prune_below_threshold,
@@ -640,6 +641,52 @@ impl ServerHandler for CogniMemServer {
                     "required": ["scenario"]
                 })),
             ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("discover_project"),
+                Cow::Borrowed("Parse source files and discover code structure (functions, structs, traits, etc.)"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project_path": { "type": "string", "description": "Path to the project root (defaults to current working directory)" }
+                    }
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("explore_module"),
+                Cow::Borrowed("Get child nodes of a code graph node or all nodes in a file"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "node_id": { "type": "string", "format": "uuid", "description": "UUID of the parent node to explore" },
+                        "file_path": { "type": "string", "description": "File path to list all nodes in that file" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum number of children to return" }
+                    }
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("get_node_summary"),
+                Cow::Borrowed("Get summary of a specific code node by UUID"),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "node_id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["node_id"]
+                })),
+            ),
+            rmcp::model::Tool::new(
+                Cow::Borrowed("search_codebase"),
+                Cow::Borrowed("Search code graph by name of function, struct, trait, etc."),
+                json_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "file_path": { "type": "string", "description": "Limit search to a specific file" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                    },
+                    "required": ["query"]
+                })),
+            ),
         ];
 
         Ok(rmcp::model::ListToolsResult {
@@ -691,6 +738,10 @@ impl ServerHandler for CogniMemServer {
             "inject_memory" => self.handle_inject_memory(args).await,
             "handoff_summary" => self.handle_handoff_summary(args).await,
             "imagine" => self.handle_imagine(args).await,
+            "discover_project" => self.handle_discover_project(args).await,
+            "explore_module" => self.handle_explore_module(args).await,
+            "get_node_summary" => self.handle_get_node_summary(args).await,
+            "search_codebase" => self.handle_search_codebase(args).await,
             _ => Err(tool_not_found()),
         }
     }
@@ -931,6 +982,7 @@ impl CogniMemServer {
                 project_models: _,
                 injection: _,
                 broker: _,
+                code_graph: _,
             } = &mut *guard;
             if let Some(skill_memory) = detect_and_create_skill(
                 graph,
@@ -1252,6 +1304,7 @@ impl CogniMemServer {
             project_models: _,
             injection: _,
             broker: _,
+            code_graph: _,
         } = &mut *guard;
         let total = graph.len();
 
@@ -2055,6 +2108,165 @@ impl CogniMemServer {
             .map_err(|e| slm_failed("imagine", guard.slm.model_name(), e))?;
 
         Ok(success_json(&output))
+    }
+
+    async fn handle_discover_project(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: DiscoverProjectArgs = parse_args(args)?;
+        let project_path = args
+            .project_path
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        let mut guard = self.state.lock().await;
+        let count = cognimem_server::memory::discover_project(&project_path, &mut guard.code_graph)
+            .map_err(|e| rmcp::ErrorData::new(rmcp::model::ErrorCode(-32000), Cow::Owned(e), None))?;
+
+        let files = guard.code_graph.all_files().len();
+        let result = DiscoverProjectResult {
+            nodes_discovered: count,
+            files_scanned: files,
+        };
+        Ok(success_json(&result))
+    }
+
+    async fn handle_explore_module(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: ExploreModuleArgs = parse_args(args)?;
+        let guard = self.state.lock().await;
+
+        let children = if let Some(node_id_str) = &args.node_id {
+            let node_id = uuid::Uuid::parse_str(node_id_str).map_err(|e| {
+                rmcp::ErrorData::new(
+                    rmcp::model::ErrorCode(-32602),
+                    Cow::Owned(format!("Invalid node_id: {e}")),
+                    None,
+                )
+            })?;
+            guard
+                .code_graph
+                .get_children(&node_id)
+                .iter()
+                .take(args.limit.unwrap_or(20))
+                .map(|n| NodeSummaryResult {
+                    id: n.id,
+                    kind: n.kind.to_string(),
+                    name: n.name.clone(),
+                    file_path: n.file_path.clone(),
+                    line_start: n.line_start,
+                    line_end: n.line_end,
+                    summary: n.summary.clone(),
+                    children: n.children.iter().map(|c| c.to_string()).collect(),
+                })
+                .collect()
+        } else if let Some(file_path) = &args.file_path {
+            let path = std::path::PathBuf::from(file_path);
+            guard
+                .code_graph
+                .get_nodes_in_file(&path)
+                .iter()
+                .take(args.limit.unwrap_or(20))
+                .map(|n| NodeSummaryResult {
+                    id: n.id,
+                    kind: n.kind.to_string(),
+                    name: n.name.clone(),
+                    file_path: n.file_path.clone(),
+                    line_start: n.line_start,
+                    line_end: n.line_end,
+                    summary: n.summary.clone(),
+                    children: n.children.iter().map(|c| c.to_string()).collect(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        Ok(success_json(&children))
+    }
+
+    async fn handle_get_node_summary(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: serde_json::Map<String, serde_json::Value> = args;
+        let node_id_str = args
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                rmcp::ErrorData::new(
+                    rmcp::model::ErrorCode(-32602),
+                    Cow::Borrowed("node_id is required"),
+                    None,
+                )
+            })?;
+
+        let node_id = uuid::Uuid::parse_str(node_id_str).map_err(|e| {
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode(-32602),
+                Cow::Owned(format!("Invalid node_id: {e}")),
+                None,
+            )
+        })?;
+
+        let guard = self.state.lock().await;
+        let node = guard.code_graph.get_node(&node_id).ok_or_else(|| {
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode(-32602),
+                Cow::Owned(format!("Node not found: {node_id}")),
+                None,
+            )
+        })?;
+
+        let result = NodeSummaryResult {
+            id: node.id,
+            kind: node.kind.to_string(),
+            name: node.name.clone(),
+            file_path: node.file_path.clone(),
+            line_start: node.line_start,
+            line_end: node.line_end,
+            summary: node.summary.clone(),
+            children: node.children.iter().map(|c| c.to_string()).collect(),
+        };
+        Ok(success_json(&result))
+    }
+
+    async fn handle_search_codebase(
+        &self,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let args: SearchCodebaseArgs = parse_args(args)?;
+        let guard = self.state.lock().await;
+
+        let matching: Vec<NodeSummaryResult> = guard
+            .code_graph
+            .search_by_name(&args.query)
+            .iter()
+            .filter(|n| {
+                if let Some(ref fp) = args.file_path {
+                    n.file_path.to_string_lossy().contains(fp)
+                } else {
+                    true
+                }
+            })
+            .take(args.limit.unwrap_or(20))
+            .map(|n| NodeSummaryResult {
+                id: n.id,
+                kind: n.kind.to_string(),
+                name: n.name.clone(),
+                file_path: n.file_path.clone(),
+                line_start: n.line_start,
+                line_end: n.line_end,
+                summary: n.summary.clone(),
+                children: n.children.iter().map(|c| c.to_string()).collect(),
+            })
+            .collect();
+
+        let result = SearchCodebaseResult { matches: matching };
+        Ok(success_json(&result))
     }
 }
 

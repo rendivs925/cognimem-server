@@ -1453,6 +1453,7 @@ mod capture_tests {
             project_models: cognimem_server::memory::ProjectModelManager::new(),
             injection: cognimem_server::memory::InjectionDecider::new(),
             broker: Box::new(cognimem_server::broker::SimpleBroker::new()),
+            code_graph: cognimem_server::memory::CodeGraph::new(),
         }))
     }
 

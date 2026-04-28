@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod codegraph;
 pub mod consolidation;
 pub mod decay;
 pub mod dream;
@@ -19,6 +20,7 @@ pub mod timescale;
 pub mod types;
 
 pub use capture::{CaptureIngest, aggregate_tool_events};
+pub use codegraph::{CodeGraph, CodeNode, CodeNodeKind, CodeRelation, discover_project, parse_file};
 pub use consolidation::{consolidate, detect_conflicts, resolve_conflicts};
 pub use decay::{apply_decay_to_all, promote_memories, prune_below_threshold};
 pub use graph::MemoryGraph;

@@ -389,6 +389,7 @@ mod tests {
             project_models: crate::memory::ProjectModelManager::new(),
             injection: crate::memory::InjectionDecider::new(),
             broker: Box::new(crate::broker::SimpleBroker::new()),
+            code_graph: crate::memory::CodeGraph::new(),
         }))
     }
 
