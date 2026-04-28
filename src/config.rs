@@ -80,9 +80,17 @@ pub struct Cli {
     )]
     pub agent_id: Option<String>,
 
-    #[arg(
-        long,
-        help = "Path to project to auto-discover into code graph on startup"
-    )]
-    pub project_path: Option<String>,
+    #[arg(long, default_value = "", help = "Path to project to auto-discover (default: current dir if .rs files exist)")]
+    pub project_path: String,
+}
+
+impl Cli {
+    pub fn resolved_project_path(&self) -> Option<std::path::PathBuf> {
+        let p = self.project_path.trim();
+        if p.is_empty() || p == "." {
+            std::env::current_dir().ok()
+        } else {
+            Some(std::path::PathBuf::from(p))
+        }
+    }
 }
