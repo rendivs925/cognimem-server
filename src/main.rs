@@ -1,18 +1,18 @@
 mod config;
 
 use clap::Parser;
+use cognimem_server::broker::BrokerEvent;
 use cognimem_server::capture::{CapturePipeline, start_capture_server};
 use cognimem_server::dashboard::start_dashboard_server;
 use cognimem_server::embeddings::fuse_scores;
-use cognimem_server::broker::BrokerEvent;
-use cognimem_server::watcher::start_file_watcher;
+use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
 use cognimem_server::memory::{
-    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus,
-    ClassifyMemoryInput, CognitiveMemoryUnit, ClaimWorkArgs, CompletePatternArgs,
-    CompletePatternInput, CompletePatternResult, CompressMemoryInput, DelegateToLlmArgs,
-    DiscoverProjectArgs, DiscoverProjectResult, EmotionState, ExecuteSkillArgs, ExecuteSkillResult,
-    ExploreModuleArgs, ExtractBestPracticeArgs, ExtractPersonaInput, ExtractPersonaMemoryInput,
-    ExtractPersonaResult, FindUnclaimedWorkArgs, ForgetArgs, ForgetResult, GetObservationsArgs,
+    AssignRoleArgs, AssignRoleResult, AssociateArgs, AssociateResult, ClaimStatus, ClaimWorkArgs,
+    ClassifyMemoryInput, CognitiveMemoryUnit, CompletePatternArgs, CompletePatternInput,
+    CompletePatternResult, CompressMemoryInput, DelegateToLlmArgs, DiscoverProjectArgs,
+    DiscoverProjectResult, EmotionState, ExecuteSkillArgs, ExecuteSkillResult, ExploreModuleArgs,
+    ExtractBestPracticeArgs, ExtractPersonaInput, ExtractPersonaMemoryInput, ExtractPersonaResult,
+    FindUnclaimedWorkArgs, ForgetArgs, ForgetResult, GetObservationsArgs,
     GetProjectConventionsArgs, HandoffSummaryArgs, ImagineArgs, ImagineInput, InMemoryStore,
     InjectMemoryArgs, ListMemoriesArgs, ListMemoriesResult, MemoryScope, MemoryStore,
     MemorySummary, MemoryTier, NodeSummaryResult, ObservationsResult, RecallArgs, RecallResult,
@@ -26,15 +26,15 @@ use cognimem_server::memory::{
     resolve_conflicts,
 };
 use cognimem_server::memory::{
-    complete_pattern, detect_and_create_skill, execute_skill as run_skill, extract_persona,
-    find_skill, rank_by_timescale, strengthen_co_activated, apply_stdp,
+    apply_stdp, complete_pattern, detect_and_create_skill, execute_skill as run_skill,
+    extract_persona, find_skill, rank_by_timescale, strengthen_co_activated,
 };
-use cognimem_server::memory::slm_types::SimulatePerspectiveInput;
 use cognimem_server::metrics::{
-    inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember, set_code_node_count,
-    set_memory_count,
+    inc_associate, inc_forget, inc_prune, inc_recall, inc_reflect, inc_remember,
+    set_code_node_count, set_memory_count,
 };
 use cognimem_server::state::CogniMemState;
+use cognimem_server::watcher::start_file_watcher;
 use config::Cli;
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -601,9 +601,7 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("inject_memory"),
-                Cow::Borrowed(
-                    "Find and inject a highly relevant memory into the current context",
-                ),
+                Cow::Borrowed("Find and inject a highly relevant memory into the current context"),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -646,7 +644,9 @@ impl ServerHandler for CogniMemServer {
             ),
             rmcp::model::Tool::new(
                 Cow::Borrowed("discover_project"),
-                Cow::Borrowed("Parse source files and discover code structure (functions, structs, traits, etc.)"),
+                Cow::Borrowed(
+                    "Parse source files and discover code structure (functions, structs, traits, etc.)",
+                ),
                 json_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -801,12 +801,16 @@ impl ServerHandler for CogniMemServer {
         ));
 
         for f in guard.code_graph.all_files().into_iter().take(10) {
-            let name = f.file_name()
+            let name = f
+                .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             resources.push(Resource::new(
-                RawResource::new(format!("code://{}", name), &format!("Code nodes in {}", name))
-                    .with_mime_type("application/json"),
+                RawResource::new(
+                    format!("code://{}", name),
+                    &format!("Code nodes in {}", name),
+                )
+                .with_mime_type("application/json"),
                 None,
             ));
         }
@@ -846,7 +850,10 @@ impl ServerHandler for CogniMemServer {
                 tracing::error!("Failed to serialize memory for resource read: {e}");
                 format!("{{\"error\":\"serialization failed: {e}\"}}")
             });
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                json,
+                uri.to_string(),
+            )]));
         }
 
         if uri.starts_with("todo://") {
@@ -867,7 +874,10 @@ impl ServerHandler for CogniMemServer {
                 .collect();
 
             let json = serde_json::to_string(&todos).unwrap_or_default();
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                json,
+                uri.to_string(),
+            )]));
         }
 
         if uri.starts_with("skill://") {
@@ -887,13 +897,19 @@ impl ServerHandler for CogniMemServer {
                 .collect();
 
             let json = serde_json::to_string(&skills).unwrap_or_default();
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                json,
+                uri.to_string(),
+            )]));
         }
 
         if uri.starts_with("context://") {
             if let Some(ref ctx) = guard.session_context {
                 let json = serde_json::to_string(ctx).unwrap_or_default();
-                return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+                return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                    json,
+                    uri.to_string(),
+                )]));
             }
 
             let sessions: Vec<serde_json::Value> = guard
@@ -910,13 +926,18 @@ impl ServerHandler for CogniMemServer {
                 .collect();
 
             let json = serde_json::to_string(&sessions).unwrap_or_default();
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                json,
+                uri.to_string(),
+            )]));
         }
 
         if uri.starts_with("code://") {
             let path = &uri["code://".len()..];
             let nodes = if path.is_empty() || path == "list" {
-                guard.code_graph.all_files()
+                guard
+                    .code_graph
+                    .all_files()
                     .iter()
                     .flat_map(|f| guard.code_graph.get_nodes_in_file(f))
                     .take(50)
@@ -924,14 +945,19 @@ impl ServerHandler for CogniMemServer {
             } else if let Ok(id) = uuid::Uuid::parse_str(path) {
                 guard.code_graph.get_node(&id).into_iter().collect()
             } else {
-                guard.code_graph.search_by_name(path)
+                guard
+                    .code_graph
+                    .search_by_name(path)
                     .into_iter()
                     .take(20)
                     .collect()
             };
 
             let json = serde_json::to_string(&nodes).unwrap_or_default();
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(json, uri.to_string())]));
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                json,
+                uri.to_string(),
+            )]));
         }
 
         Err(rmcp::ErrorData::new(
@@ -1215,7 +1241,8 @@ impl CogniMemServer {
             fuse_scores(&fts_ids, 0.4, &vec_scores, 0.6)
         };
 
-        let fused_scores: Vec<(uuid::Uuid, f32)> = fused.iter().map(|(id, score)| (*id, *score)).collect();
+        let fused_scores: Vec<(uuid::Uuid, f32)> =
+            fused.iter().map(|(id, score)| (*id, *score)).collect();
 
         let results_before_association: Vec<uuid::Uuid> = fused
             .iter()
@@ -1263,8 +1290,14 @@ impl CogniMemServer {
         dedup_memories(&mut results);
 
         results.sort_by(|a, b| {
-            let pos_a = timescaled_ids.iter().position(|id| *id == a.id).unwrap_or(usize::MAX);
-            let pos_b = timescaled_ids.iter().position(|id| *id == b.id).unwrap_or(usize::MAX);
+            let pos_a = timescaled_ids
+                .iter()
+                .position(|id| *id == a.id)
+                .unwrap_or(usize::MAX);
+            let pos_b = timescaled_ids
+                .iter()
+                .position(|id| *id == b.id)
+                .unwrap_or(usize::MAX);
             pos_a.cmp(&pos_b)
         });
 
@@ -1690,11 +1723,11 @@ impl CogniMemServer {
             return Err(invalid_params("skill_name must not be empty"));
         }
 
-        let guard = self.state.lock().await;
+        let mut guard = self.state.lock().await;
         let memory = find_skill(&guard.graph, &args.skill_name)
             .ok_or_else(|| invalid_params(&format!("Skill not found: {}", args.skill_name)))?;
 
-        let skill: SkillMemory = memory
+        let mut skill: SkillMemory = memory
             .content
             .split_once('\n')
             .and_then(|(_, json)| serde_json::from_str(json).ok())
@@ -1905,10 +1938,9 @@ impl CogniMemServer {
 
         let mut guard = self.state.lock().await;
 
-        let claim = guard
-            .work_claims
-            .get_mut(&args.memory_id)
-            .ok_or_else(|| invalid_params(&format!("No claim found for memory {}", args.memory_id)))?;
+        let claim = guard.work_claims.get_mut(&args.memory_id).ok_or_else(|| {
+            invalid_params(&format!("No claim found for memory {}", args.memory_id))
+        })?;
 
         let complete = args.complete.unwrap_or(false);
         if complete {
@@ -2235,7 +2267,13 @@ impl CogniMemServer {
         let memory_context: Vec<String> = similar
             .iter()
             .filter_map(|(id, _)| guard.graph.get_memory(id))
-            .map(|m| format!("[{}] {}", m.tier, m.content.chars().take(200).collect::<String>()))
+            .map(|m| {
+                format!(
+                    "[{}] {}",
+                    m.tier,
+                    m.content.chars().take(200).collect::<String>()
+                )
+            })
             .collect();
 
         let mut context = args.context.unwrap_or_default();
@@ -2266,7 +2304,9 @@ impl CogniMemServer {
 
         let mut guard = self.state.lock().await;
         let count = cognimem_server::memory::discover_project(&project_path, &mut guard.code_graph)
-            .map_err(|e| rmcp::ErrorData::new(rmcp::model::ErrorCode(-32000), Cow::Owned(e), None))?;
+            .map_err(|e| {
+                rmcp::ErrorData::new(rmcp::model::ErrorCode(-32000), Cow::Owned(e), None)
+            })?;
 
         let files = guard.code_graph.all_files().len();
         let result = DiscoverProjectResult {
@@ -2419,9 +2459,20 @@ fn dedup_memories(results: &mut Vec<&CognitiveMemoryUnit>) {
     results.retain(|memory| seen.insert(memory.id));
 }
 
-fn clone_with_embedding(id: uuid::Uuid, content: &str, tier: String, created_at: i64, embedding: Vec<f32>) -> CognitiveMemoryUnit {
+fn clone_with_embedding(
+    id: uuid::Uuid,
+    content: &str,
+    tier: String,
+    created_at: i64,
+    embedding: Vec<f32>,
+) -> CognitiveMemoryUnit {
     let decay_rate = tier.parse::<MemoryTier>().unwrap_or_default().decay_rate();
-    let mut mem = CognitiveMemoryUnit::new(content.to_string(), tier.parse().unwrap_or_default(), 0.5, decay_rate);
+    let mut mem = CognitiveMemoryUnit::new(
+        content.to_string(),
+        tier.parse().unwrap_or_default(),
+        0.5,
+        decay_rate,
+    );
     mem.id = id;
     mem.metadata.created_at = created_at;
     mem
@@ -2595,12 +2646,21 @@ async fn consolidation_task(
         let memory_count = graph.len();
         let replay_count = c3gan.get_replay_count(memory_count);
         let anchors = c3gan.sample_anchors(replay_count);
-        
+
         if !anchors.is_empty() {
-            tracing::debug!("C3GAN replay: {} anchor memories for replay during consolidation", anchors.len());
+            tracing::debug!(
+                "C3GAN replay: {} anchor memories for replay during consolidation",
+                anchors.len()
+            );
             for anchor in anchors {
                 let emb = embedder.embed(&anchor.content);
-                let rep = clone_with_embedding(anchor.id, &anchor.content, anchor.tier.clone(), anchor.created_at, emb.clone());
+                let rep = clone_with_embedding(
+                    anchor.id,
+                    &anchor.content,
+                    anchor.tier.clone(),
+                    anchor.created_at,
+                    emb.clone(),
+                );
                 graph.add_memory(rep);
             }
         }
@@ -2734,7 +2794,10 @@ async fn run_daemon(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let capture_pipeline = Arc::new(Mutex::new(CapturePipeline::new(state.clone())));
     tokio::spawn(start_capture_server(capture_pipeline, cli.capture_port));
     tokio::spawn(start_dashboard_server(state.clone(), cli.dashboard_port));
-    tracing::info!("Dashboard starting on http://localhost:{}", cli.dashboard_port);
+    tracing::info!(
+        "Dashboard starting on http://localhost:{}",
+        cli.dashboard_port
+    );
 
     if cli.resolved_project_path().is_some() {
         tokio::spawn(start_file_watcher(
@@ -3031,7 +3094,12 @@ mod tests {
         let typed: ExtractPersonaResult = result.into_typed().unwrap();
 
         assert!(!typed.profiles.is_empty());
-        assert!(typed.profiles.iter().any(|profile| profile.domain == PersonaDomain::Work));
+        assert!(
+            typed
+                .profiles
+                .iter()
+                .any(|profile| profile.domain == PersonaDomain::Work)
+        );
     }
 
     #[tokio::test]
