@@ -92,8 +92,7 @@ impl Theme {
 body{{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--fg);line-height:1.6;min-height:100vh}}
 .layout{{display:flex;min-height:100vh}}
 .sidebar{{width:{w};background:linear-gradient(180deg,rgba(33,73,105,.1),rgba(0,0,0,.3));border-right:1px solid var(--muted);padding:24px 16px}}
-.logo{{font-size:24px;font-weight:700;color:var(--accent);margin-bottom:32px}}
-.logo span{{color:var(--primary)}}
+.logo{{font-size:24px;font-weight:700;color:var(--fg);margin-bottom:32px;letter-spacing:-0.5px}}
 .nav{{display:flex;flex-direction:column;gap:4px}}
 .nav-item{{padding:12px 16px;border-radius:8px;cursor:pointer;transition:.2s;font-size:14px;text-decoration:none;color:var(--fg);display:block}}
 .nav-item:hover{{background:var(--muted);opacity:0.8}}

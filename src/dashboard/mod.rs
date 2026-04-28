@@ -45,7 +45,7 @@ fn render_template(theme: &theme::Theme) -> String {
     TEMPLATE
         .replace("{{TITLE}}", "CogniMem")
         .replace("{{CSS}}", &theme.css())
-        .replace("{{LOGO}}", r#"Cogni<span>Mem</span>"#)
+        .replace("{{LOGO}}", "CogniMem")
         .replace("{{ACTIVE_MEM}}", "active")
         .replace("{{ACTIVE_GRAPH}}", "")
         .replace("{{ACTIVE_STATS}}", "")
