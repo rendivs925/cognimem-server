@@ -1,0 +1,8 @@
+{
+  "name": "cognimem-opencode-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "^0.1.0"
+  }
+}

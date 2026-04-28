@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cognimem": {
+      "type": "local",
+      "command": ["cognimem-server", "--data-path", "~/.cognimem-server/cognimem-data"],
+      "enabled": true
+    }
+  },
+  "hooks": {
+    "session.idle": "cognimem-consolidate",
+    "experimental.session.compacting": "cognimem-context-inject"
+  }
+}
