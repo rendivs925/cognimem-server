@@ -1108,6 +1108,7 @@ impl CogniMemServer {
                 injection: _,
                 broker: _,
                 code_graph: _,
+                c3gan: _,
             } = &mut *guard;
             if let Some(skill_memory) = detect_and_create_skill(
                 graph,
@@ -1430,6 +1431,7 @@ impl CogniMemServer {
             injection: _,
             broker: _,
             code_graph: _,
+            c3gan: _,
         } = &mut *guard;
         let total = graph.len();
 
@@ -2400,6 +2402,14 @@ fn dedup_memories(results: &mut Vec<&CognitiveMemoryUnit>) {
     results.retain(|memory| seen.insert(memory.id));
 }
 
+fn clone_with_embedding(id: uuid::Uuid, content: &str, tier: String, created_at: i64, embedding: Vec<f32>) -> CognitiveMemoryUnit {
+    let decay_rate = tier.parse::<MemoryTier>().unwrap_or_default().decay_rate();
+    let mut mem = CognitiveMemoryUnit::new(content.to_string(), tier.parse().unwrap_or_default(), 0.5, decay_rate);
+    mem.id = id;
+    mem.metadata.created_at = created_at;
+    mem
+}
+
 fn update_activation_for(guard: &mut CogniMemState, ids: &[uuid::Uuid], now: i64) {
     for id in ids {
         if let Some(mem) = guard.graph.get_memory_mut(id) {
@@ -2548,6 +2558,7 @@ async fn consolidation_task(
             search,
             embedder,
             slm,
+            c3gan,
             ..
         } = &mut *guard;
 
@@ -2561,6 +2572,19 @@ async fn consolidation_task(
             search.remove(id);
             if let Err(e) = storage.delete(id) {
                 error!("Failed to delete consolidated memory {}: {e}", id);
+            }
+        }
+
+        let memory_count = graph.len();
+        let replay_count = c3gan.get_replay_count(memory_count);
+        let anchors = c3gan.sample_anchors(replay_count);
+        
+        if !anchors.is_empty() {
+            tracing::debug!("C3GAN replay: {} anchor memories for replay during consolidation", anchors.len());
+            for anchor in anchors {
+                let emb = embedder.embed(&anchor.content);
+                let rep = clone_with_embedding(anchor.id, &anchor.content, anchor.tier.clone(), anchor.created_at, emb.clone());
+                graph.add_memory(rep);
             }
         }
 

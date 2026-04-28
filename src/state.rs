@@ -2,7 +2,7 @@ use crate::broker::{RedisBroker, SimpleBroker};
 use crate::embeddings::{EmbeddingEngine, HashEmbedding};
 use crate::memory::types::{HandoffSummary, SessionContext, WorkClaim};
 use crate::memory::{
-    CodeGraph, InjectionDecider, MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelManager,
+    C3GAN, CodeGraph, InjectionDecider, MemoryGraph, MemoryStore, NoOpSlm, OllamaSlm, ProjectModelManager,
     SlmEngine,
 };
 use crate::search::{Fts5Search, SearchEngine, SubstringSearch};
@@ -30,6 +30,7 @@ pub struct CogniMemState {
     pub injection: InjectionDecider,
     pub broker: Box<dyn crate::broker::Broker>,
     pub code_graph: CodeGraph,
+    pub c3gan: C3GAN,
 }
 
 impl CogniMemState {
@@ -109,6 +110,7 @@ impl CogniMemState {
             injection: InjectionDecider::new(),
             broker,
             code_graph: CodeGraph::new(),
+            c3gan: C3GAN::new(100, 0.1),
         }
     }
 }

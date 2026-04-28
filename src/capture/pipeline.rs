@@ -390,6 +390,7 @@ mod tests {
             injection: crate::memory::InjectionDecider::new(),
             broker: Box::new(crate::broker::SimpleBroker::new()),
             code_graph: crate::memory::CodeGraph::new(),
+            c3gan: crate::memory::C3GAN::new(100, 0.1),
         }))
     }
 
