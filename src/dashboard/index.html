@@ -10,7 +10,92 @@
         function setActive(link) {
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
             link.classList.add('active');
+            const view = link.dataset.view;
+            if (view === 'memories') loadMemories();
+            else if (view === 'graph') loadCodeGraph();
+            else if (view === 'stats') loadStats();
         }
+        
+        function loadMemories() {
+            document.getElementById('card-header').textContent = 'Memories';
+            htmx.ajax('GET', '/api/memories', {target: '#content'});
+        }
+        
+        function loadCodeGraph() {
+            document.getElementById('card-header').textContent = 'Code Graph';
+            htmx.ajax('GET', '/api/graph', {target: '#content'});
+        }
+        
+        function loadStats() {
+            document.getElementById('card-header').textContent = 'Statistics';
+            htmx.ajax('GET', '/api/stats', {target: '#content'});
+        }
+        
+        function searchMemories(query) {
+            if (!query) return loadMemories();
+            const filtered = window.allMemories?.filter(m => 
+                m.content.toLowerCase().includes(query.toLowerCase()) ||
+                m.tier.toLowerCase().includes(query.toLowerCase())
+            ) || [];
+            renderMemories(filtered);
+        }
+        
+        function renderMemories(memories) {
+            if (!memories.length) {
+                document.getElementById('content').innerHTML = '<div class="empty">No memories found</div>';
+                return;
+            }
+            let html = '<table class="table"><thead><tr><th>ID</th><th>Tier</th><th>Content</th><th>Activation</th><th>Strength</th></tr></thead><tbody>';
+            memories.forEach(m => {
+                const shortId = m.id.substring(0, 8);
+                html += `<tr onclick="viewMemory('${m.id}')">
+                    <td><code>${shortId}</code></td>
+                    <td><span class="tier tier-${m.tier}">${m.tier}</span></td>
+                    <td>${m.content.substring(0, 60)}</td>
+                    <td class="metric">${m.activation.toFixed(2)}</td>
+                    <td class="metric">${m.strength.toFixed(2)}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            document.getElementById('content').innerHTML = html;
+        }
+        
+        function viewMemory(id) {
+            const memory = window.allMemories?.find(m => m.id === id);
+            if (!memory) return;
+            document.getElementById('modal-content').innerHTML = `
+                <div class="modal-header">
+                    <span class="tier tier-${memory.tier}">${memory.tier}</span>
+                    <code>${memory.id}</code>
+                </div>
+                <div class="modal-body">${memory.content}</div>
+                <div class="modal-meta">
+                    <span>Activation: ${memory.activation.toFixed(2)}</span>
+                    <span>Strength: ${memory.strength.toFixed(2)}</span>
+                </div>
+            `;
+            document.getElementById('modal').style.display = 'flex';
+        }
+        
+        function closeModal() {
+            document.getElementById('modal').style.display = 'none';
+        }
+        
+        function addMemory() {
+            const content = document.getElementById('new-memory-content').value;
+            const tier = document.getElementById('new-memory-tier').value;
+            if (!content) return;
+            
+            fetch('/api/memories', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({content, tier})
+            }).then(() => {
+                document.getElementById('new-memory-content').value = '';
+                loadMemories();
+            });
+        }
+        
         document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.nav-item').forEach(link => {
                 link.addEventListener('click', () => setActive(link));
@@ -24,18 +109,44 @@
         <div class="sidebar">
             <div class="logo">{{LOGO}}</div>
             <div class="nav">
-                <a class="nav-item" hx-get="/api/memories" hx-target="#content">Memories</a>
-                <a class="nav-item" hx-get="/api/graph" hx-target="#content">Code Graph</a>
-                <a class="nav-item" hx-get="/api/stats" hx-target="#content">Stats</a>
+                <a class="nav-item" data-view="memories" onclick="setActive(this)">Memories</a>
+                <a class="nav-item" data-view="graph" onclick="setActive(this)">Code Graph</a>
+                <a class="nav-item" data-view="stats" onclick="setActive(this)">Stats</a>
             </div>
         </div>
         <div class="main">
             <div class="title">{{MAIN_TITLE}}</div>
             <div class="subtitle">{{MAIN_SUBTITLE}}</div>
+            <div class="toolbar">
+                <input type="text" class="search-input" placeholder="Search memories..." onkeyup="searchMemories(this.value)">
+                <button class="btn btn-primary" onclick="document.getElementById('add-modal').style.display='flex'">+ Add Memory</button>
+            </div>
             <div class="card">
                 <div class="card-header" id="card-header">Memories</div>
                 <div id="content" hx-get="/api/memories" hx-trigger="load"></div>
             </div>
+        </div>
+    </div>
+    
+    <div id="modal" class="modal" onclick="closeModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div id="modal-content"></div>
+            <button class="btn" onclick="closeModal()">Close</button>
+        </div>
+    </div>
+    
+    <div id="add-modal" class="modal" onclick="document.getElementById('add-modal').style.display='none'">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <h3>Add New Memory</h3>
+            <textarea id="new-memory-content" class="input" placeholder="Memory content..." rows="4"></textarea>
+            <select id="new-memory-tier" class="input">
+                <option value="sensory">Sensory</option>
+                <option value="working">Working</option>
+                <option value="episodic" selected>Episodic</option>
+                <option value="semantic">Semantic</option>
+                <option value="procedural">Procedural</option>
+            </select>
+            <button class="btn btn-primary" onclick="addMemory()">Save Memory</button>
         </div>
     </div>
 </body>

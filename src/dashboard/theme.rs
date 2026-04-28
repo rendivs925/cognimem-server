@@ -119,6 +119,41 @@ body{{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--fg);line-
 .metric{{font-family:'JetBrains Mono',monospace;font-size:14px}}
 .empty{{padding:48px;text-align:center;opacity:.5}}
 code{{font-family:'JetBrains Mono',monospace;background:var(--muted);padding:2px 8px;border-radius:4px;font-size:12px}}
+.toolbar{{display:flex;gap:12px;margin-bottom:16px;align-items:center}}
+.search-input{{flex:1;background:var(--muted);border:1px solid var(--muted);border-radius:{r};padding:12px 16px;color:var(--fg);font-size:14px;font-family:'Outfit',sans-serif}}
+.search-input::placeholder{{opacity:.5}}
+.search-input:focus{{outline:none;border-color:var(--primary)}}
+.btn{{padding:12px 20px;border-radius:{r};border:1px solid var(--muted);background:transparent;color:var(--fg);cursor:pointer;font-size:14px;font-family:'Outfit',sans-serif;transition:.2s}}
+.btn:hover{{background:var(--muted)}}
+.btn-primary{{background:linear-gradient(135deg,var(--primary),var(--accent));color:#000;border:none;font-weight:600}}
+.btn-primary:hover{{opacity:.9}}
+.modal{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);align-items:center;justify-content:center;z-index:1000}}
+.modal-content{{background:var(--bg);border:1px solid var(--muted);border-radius:{r};padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto}}
+.modal-header{{display:flex;align-items:center;gap:12px;margin-bottom:16px}}
+.modal-body{{font-size:15px;line-height:1.7;margin-bottom:16px}}
+.modal-meta{{display:flex;gap:24px;font-size:13px;opacity:.7}}
+.input{{width:100%;background:var(--muted);border:1px solid var(--muted);border-radius:{r};padding:12px 16px;color:var(--fg);font-size:14px;font-family:'Outfit',sans-serif;margin-bottom:12px}}
+.input:focus{{outline:none;border-color:var(--primary)}}
+select.input{{cursor:pointer}}
+.node-item{{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--muted)}}
+.node-kind{{font-size:10px;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:var(--muted);font-family:'JetBrains Mono',monospace}}
+.node-name{{flex:1;font-family:'JetBrains Mono',monospace;font-size:13px}}
+.node-lines{{font-size:11px;opacity:.5;font-family:'JetBrains Mono',monospace}}
+.file-nodes{{padding:8px 0}}
+.tree-item{{padding:8px 12px;cursor:pointer;border-radius:8px;transition:.2s}}
+.tree-item:hover{{background:var(--muted)}}
+.tree-folder{{display:flex;align-items:center;gap:8px;font-size:14px}}
+.tree-arrow{{width:16px;height:16px;display:flex;align-items:center;justify-content:center;font-size:10px;transition:.2s}}
+.tree-arrow.open{{rotate:90deg}}
+.tree-children{{padding-left:20px;display:none}}
+.tree-children.open{{display:block}}
+.stats-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}}
+.tier-chart{{padding:24px}}
+.tier-bar{{display:flex;align-items:center;gap:16px;margin-bottom:12px}}
+.tier-bar-label{{width:100px;font-size:13px}}
+.tier-bar-track{{flex:1;height:8px;background:var(--muted);border-radius:4px;overflow:hidden}}
+.tier-bar-fill{{height:100%;border-radius:4px;transition:width .3s ease}}
+.tier-bar-value{{width:40px;text-align:right;font-size:13px;font-family:'JetBrains Mono',monospace}}
 "#,
             w = self.sidebar_width,
             r = self.border_radius
