@@ -4,7 +4,7 @@ CogniMem is a local MCP server in Rust that gives coding agents a persistent cog
 
 Instead of treating every request as stateless, an MCP client can use CogniMem to store facts, preferences, patterns, architectural decisions, and task context, then retrieve them later through structured memory operations.
 
-It is designed for local-first use with MCP-compatible coding tools such as OpenCode.
+It is designed for local-first use with MCP-compatible coding tools such as OpenCode, and includes an OpenCode plugin for deep integration.
 
 ## Why This Exists
 
@@ -13,9 +13,12 @@ LLM agents are good at short-horizon reasoning, but they usually have weak memor
 - persistence across sessions
 - different memory tiers with different decay behavior
 - associative links between memories
-- relevance-based recall
+- relevance-based recall with SLM reranking
 - background forgetting and pruning
 - explicit reflection and promotion of durable knowledge
+- code graph understanding via tree-sitter
+- procedural skills with WASM execution
+- dreaming/consolidation cycles
 
 This makes the agent behave less like a stateless text generator and more like a system with working context, long-term knowledge, and recall paths.
 
@@ -31,11 +34,14 @@ CogniMem currently provides:
   - `episodic`
   - `semantic`
   - `procedural`
-- activation-based recall and decay
+- activation-based recall with SLM reranking
 - multi-hop spreading activation over associations
 - bounded working-memory style capacity for `sensory` and `working`
 - RocksDB persistence or an in-memory backend
 - Prometheus-style metrics over HTTP
+- Code graph discovery and querying
+- Procedural skills with WASM execution
+- Dreaming/consolidation cycles
 
 ## Mental Model
 
@@ -329,22 +335,30 @@ Build a release binary:
 cargo build --release
 ```
 
-The binary will be created at:
+The binary will be at `target/release/cognimem-server`.
+
+### Installation Scripts
+
+The project includes installation scripts supporting multiple methods:
 
 ```bash
-target/release/cognimem-server
+# Direct install to ~/.local/bin
+./scripts/install.sh
+
+# Homebrew tap (requires Homebrew)
+./scripts/install.sh --brew
+
+# Docker
+./scripts/install.sh --docker
 ```
 
-Optional local install:
+### Homebrew Tap
+
+You can also install via Homebrew:
 
 ```bash
-cargo install --path .
-```
-
-That will usually place it at:
-
-```bash
-~/.cargo/bin/cognimem-server
+brew tap cognimem/home-cognimem
+brew install cognimem-server
 ```
 
 ## Running the Server
@@ -401,6 +415,45 @@ cognimem-server --storage memory
 OpenCode uses the `mcp` section in `opencode.json`.
 
 Adjust the example paths below to match your machine.
+
+### OpenCode Plugin (Recommended)
+
+The project includes an OpenCode plugin for deep integration with event hooks and custom tools.
+
+Install the plugin:
+
+```bash
+# Project-level
+cp -r opencode-plugin .opencode/plugins/cognimem
+
+# Or global
+cp -r opencode-plugin ~/.config/opencode/plugins/cognimem
+```
+
+Add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["cognimem-opencode-plugin"]
+}
+```
+
+#### Plugin Features
+
+- Event hooks: `session.idle`, `session.created`, `experimental.session.compacting`
+- Custom tools:
+  - `cognimem_recall` - Recall memories
+  - `cognimem_inject` - Inject new memory
+  - `cognimem_search` - Search codebase
+  - `cognimem_consolidate` - Run consolidation
+  - `cognimem_dream` - Trigger dreaming
+  - `cognimem_discover` - Discover code graph
+  - `cognimem_imagine` - Imagine scenarios
+
+### MCP Server
+
+Alternatively, use the MCP server directly:
 
 ### Example Using Binary Name from PATH
 
@@ -553,15 +606,8 @@ Contains:
 - resource handlers
 - metrics HTTP listener
 - background decay task
-
-### `src/memory/types.rs`
-
-Contains:
-
-- memory tiers
-- memory metadata
-- memory node data model
-- MCP request/response types
+- capture server
+- dashboard server
 
 ### `src/memory/graph.rs`
 
@@ -573,6 +619,7 @@ Important details:
 - tracks memory IDs separately
 - stores association edges
 - stores tier indexes for faster filtered recall
+- vector embeddings for semantic search
 
 ### `src/memory/decay.rs`
 
@@ -582,21 +629,54 @@ Contains:
 - pruning logic
 - promotion logic used by reflection
 
-### `src/memory/store.rs`
+### `src/memory/codegraph.rs`
 
-Defines the storage abstraction.
+Contains code graph implementation:
 
-### `src/memory/storage.rs`
+- tree-sitter parsing for Rust and Python
+- CodeNode and CodeRelation types
+- discovers functions, structs, traits, imports
+- supports multi-language parsing
 
-RocksDB implementation of the storage abstraction.
+### `src/memory/skill.rs`
 
-### `src/memory/in_memory.rs`
+Contains procedural skills:
 
-In-memory implementation of the storage abstraction.
+- skill detection from repeated patterns
+- WASM execution via wasmtime
+- Self-optimization based on accuracy
 
-### `src/metrics.rs`
+### `src/memory/dream.rs`
 
-Defines the exported counters and gauge formatting for the metrics endpoint.
+Contains dreaming/consolidation:
+
+- SLM-powered dream generation
+- C3GAN generative replay
+- consolidation cycles
+
+### `src/security/`
+
+Contains security module:
+
+- AES-256-GCM encryption
+- bcrypt password hashing
+- AuthMiddleware
+
+### `src/dashboard/`
+
+Contains web dashboard:
+
+- HTMX-powered UI
+- centralized theme system
+- memory and code graph views
+
+### `src/capture/`
+
+Contains capture pipeline:
+
+- CanonicalEvent handling
+- aggregation pipeline
+- ingest server
 
 ## Example Memory Workflows
 
@@ -706,6 +786,37 @@ Run checks locally:
 cargo clippy -- -D warnings
 cargo test
 cargo build --release
+```
+
+## Security
+
+The server includes optional security features.
+
+### CLI Options
+
+```bash
+cognimem-server \
+  --require-auth \
+  --password "your-password" \
+  --tls-cert /path/to/cert.pem \
+  --tls-key /path/to/key.pem
+```
+
+### Encryption
+
+Data can be encrypted at rest using AES-256-GCM.
+
+### Authentication
+
+Optional password-based authentication for MCP requests.
+
+### TLS
+
+TLS support requires a proxy (nginx, caddy) in front:
+
+```bash
+# Use nginx or caddy for TLS termination
+cognimem-server --data-path /path/to/data
 ```
 
 ## Troubleshooting
